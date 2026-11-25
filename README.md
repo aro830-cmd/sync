@@ -4,6 +4,8 @@ Multi-agent technical club event & sponsorship orchestrator — Synchronise 2026
 
 Type a one-line brief ("Hackathon, 15 Dec, ₹50k, 200 people"). Five agents — Planner, Sponsorship, Logistics, Comms, Reporting — run in order and each ends in a real side effect: database rows, sent emails, generated PDFs. Sponsor pitches wait for a human "Approve & send".
 
+**New collaborator? Start with [`CONTRIBUTING.md`](CONTRIBUTING.md)** — access, setup, workflow.
+
 Design: [`ARCHITECTURE.md`](ARCHITECTURE.md) · Build status: [`PROGRESS.md`](PROGRESS.md)
 
 ## Stack
@@ -13,7 +15,7 @@ Next.js 16 + TypeScript · Tailwind v4 + motion · Gemini · Supabase Postgres �
 ## Setup
 
 1. `npm install`
-2. Copy the keys into `.env.local` (git-ignored):
+2. `cp .env.example .env.local` and fill in the keys (git-ignored; never commit them):
 
    | Variable | Where |
    |---|---|
