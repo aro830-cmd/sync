@@ -3,24 +3,21 @@
 import Link from "next/link";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { FoxCanvas } from "@/components/FoxCanvas";
-import { CAST_SHEET, foxStill, stillWidth } from "@/lib/fox";
+import { foxStill } from "@/lib/fox";
 
 const noop = () => () => {};
 const clamp = (x: number) => Math.max(0, Math.min(1, x));
 const ease = (t: number) => 1 - (1 - t) ** 3;
 const LENIS = "https://cdn.jsdelivr.net/npm/lenis@1.1.13/dist/lenis.min.js";
 
-// The six characters from the sheet: the five agents plus you, the organiser who approves.
-const CAST = [
-  { name: "The Planner", n: "01", type: "BUDGET & TIMELINE", col: 0, row: 0 },
-  { name: "The Pitcher", n: "02", type: "SPONSORSHIP", col: 1, row: 0 },
-  { name: "The Fixer", n: "03", type: "LOGISTICS", col: 2, row: 0 },
-  { name: "The Herald", n: "04", type: "COMMS", col: 0, row: 1 },
-  { name: "The Analyst", n: "05", type: "REPORTING", col: 1, row: 1 },
-  { name: "You", n: "06", type: "APPROVER", col: 2, row: 1 },
+// The five agents as the "How it works" steps on the landing.
+const STEPS = [
+  { n: "01", agent: "Planner", title: "One line becomes a plan", body: "Type “Hackathon, 15 Dec, ₹50k, 200 people”. The Planner decides if it's funded or free, splits the budget, sets sponsor tiers and dates every milestone.", makes: ["Budget split", "Sponsor tiers", "Timeline"] },
+  { n: "02", agent: "Sponsorship", title: "Sponsors, found and pitched", body: "It recommends real companies that fit your theme, scores every lead and drafts a tailored cold email. Nothing leaves until you press Approve & send.", makes: ["8 recommendations", "Fit scores", "Pitch drafts"] },
+  { n: "03", agent: "Logistics", title: "A run-of-show with zero clashes", body: "Your volunteers and their skills go in; a timed run-of-show comes out, with a deterministic scheduler so no one is ever double-booked.", makes: ["Timed tasks", "Shift emails", "0 clashes"] },
+  { n: "04", agent: "Comms", title: "Registration opens itself", body: "A public sign-up page, the announcement for WhatsApp and Instagram, a reminder email, door check-in and certificates for everyone who came.", makes: ["Sign-up page", "Announcement", "Certificates"] },
+  { n: "05", agent: "Reporting", title: "The report writes itself", body: "After the day it writes the report from real attendance only — a partner report for sponsors, or a club report for free events — as a PDF.", makes: ["Report PDF", "Partner email"] },
 ];
-const POS_X = [".15%", "50.07%", "99.94%"];
-const POS_Y = [".2%", "99.7%"];
 
 /* eslint-disable @typescript-eslint/no-explicit-any -- Lenis is loaded from the CDN at runtime */
 declare global {
@@ -36,9 +33,7 @@ export function RelayLanding() {
   const root = useRef<HTMLDivElement>(null);
   const stage = useRef<HTMLDivElement>(null);
   const story = useRef<HTMLElement>(null);
-  const cast = useRef<HTMLElement>(null);
-  const track = useRef<HTMLDivElement>(null);
-  const prog = useRef<HTMLElement>(null);
+  const how = useRef<HTMLElement>(null);
   const word = useRef<HTMLHeadingElement>(null);
   const keyRef = useRef<HTMLButtonElement>(null);
   const lenis = useRef<any>(null);
@@ -63,8 +58,10 @@ export function RelayLanding() {
     const frame = () => {
       const vh = innerHeight;
       el.classList.toggle("scrolled", scrollY > vh * 0.35);
-      const ct = cast.current?.getBoundingClientRect().top ?? 1e9;
-      el.classList.toggle("at-end", ct < vh * 0.55);
+      const hr = how.current?.getBoundingClientRect();
+      el.classList.toggle("at-end", (hr?.top ?? 1e9) < vh * 0.55);
+      // "How it works" rail fills as you read down the steps.
+      if (hr) how.current!.style.setProperty("--hp", String(clamp((vh * 0.6 - hr.top) / Math.max(1, hr.height - vh * 0.4))));
       if (word.current && matchMedia("(min-width: 821px)").matches) word.current.style.transform = `translateY(${-40 * Math.min(1, scrollY / vh)}%)`;
 
       const sr = story.current?.getBoundingClientRect();
@@ -188,7 +185,7 @@ export function RelayLanding() {
     k?.classList.add("hit");
     setTimeout(() => k?.classList.remove("hit"), 140);
     const st = story.current!.offsetTop, vh = innerHeight;
-    const stops = [0, st + vh * 0.02, st + vh * 1.35, cast.current!.offsetTop];
+    const stops = [0, st + vh * 0.02, st + vh * 1.35, how.current!.offsetTop];
     const next = stops.find((y) => y > scrollY + 8);
     go(next ?? 0);
   };
@@ -204,49 +201,11 @@ export function RelayLanding() {
     return () => removeEventListener("keydown", onKey);
   });
 
-  // ── cast track: drag, drift, progress ──
+  // ── how-it-works steps fade up as they enter the viewport ──
   useEffect(() => {
-    const t = track.current!;
-    const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
-    let drifting = !reduce, raf = 0, last = performance.now(), down = false, sx = 0, sl = 0;
-    const stop = () => (drifting = false);
-    const tick = (now: number) => {
-      const dt = now - last;
-      last = now;
-      if (drifting) {
-        t.scrollLeft += 0.03 * dt;
-        if (t.scrollLeft >= t.scrollWidth / 2) t.scrollLeft -= t.scrollWidth / 2; // cards are doubled, so wrap seamlessly
-      }
-      const vis = t.clientWidth / t.scrollWidth;
-      const frac = t.scrollLeft / Math.max(1, t.scrollWidth - t.clientWidth);
-      if (prog.current) prog.current.style.width = `${(vis + (1 - vis) * frac) * 100}%`;
-      raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    const pd = (e: PointerEvent) => {
-      stop();
-      if (e.pointerType !== "mouse") return;
-      down = true;
-      sx = e.clientX;
-      sl = t.scrollLeft;
-      t.classList.add("dragging");
-    };
-    const pm = (e: PointerEvent) => down && (t.scrollLeft = sl - (e.clientX - sx));
-    const pu = () => {
-      down = false;
-      t.classList.remove("dragging");
-    };
-    t.addEventListener("pointerdown", pd);
-    t.addEventListener("wheel", stop, { passive: true });
-    t.addEventListener("touchstart", stop, { passive: true });
-    addEventListener("pointermove", pm);
-    addEventListener("pointerup", pu);
-    return () => {
-      cancelAnimationFrame(raf);
-      t.removeEventListener("pointerdown", pd);
-      removeEventListener("pointermove", pm);
-      removeEventListener("pointerup", pu);
-    };
+    const io = new IntersectionObserver((es) => es.forEach((e) => e.isIntersecting && e.target.classList.add("in")), { threshold: 0.25 });
+    how.current!.querySelectorAll(".rl-reveal").forEach((x) => io.observe(x));
+    return () => io.disconnect();
   }, []);
 
   const stageProgress = () => {
@@ -279,7 +238,7 @@ export function RelayLanding() {
         <nav className="rl-menu" aria-hidden={!open} onClick={(e) => (e.target as HTMLElement).closest("a") && setOpen(false)}>
           <a href="#top"><span>01</span>The Brief</a>
           <a href="#walk"><span>02</span>The Agents</a>
-          <a href="#cast"><span>03</span>The Cast</a>
+          <a href="#how"><span>03</span>How it works</a>
           <Link href="/admin/login"><span>04</span>Open the desk</Link>
         </nav>
       </header>
@@ -290,7 +249,7 @@ export function RelayLanding() {
           Our agents
           <span className="rl-circ"><svg viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"><circle cx="2.4" cy="2.4" r="1.4" /><circle cx="7.6" cy="7.6" r="1.4" /><path d="M2.4 3.8c0 3 5.2 0 5.2 2.4" /></svg></span>
         </a>
-        <button className="rl-icon" aria-label="Meet a random agent" onClick={() => go(cast.current!.offsetTop)}>
+        <button className="rl-icon" aria-label="How Relay works" onClick={() => go(how.current!.offsetTop)}>
           <svg viewBox="0 0 28 28"><path d="M4 5l5 6h10l5-6-1 12c0 4-4 7-9 7s-9-3-9-7z" fill="#fbefe4" /><rect x="8.6" y="12.6" width="10.8" height="3.4" rx="1.4" fill="#ff5a1f" /><circle cx="14" cy="20" r="1.1" fill="#0b0806" /></svg>
         </button>
         <div className="rl-switch rl-label">
@@ -321,8 +280,8 @@ export function RelayLanding() {
           <div className="rl-frame">
             <div className="rl-stillwrap">
               {mode === "stills" && (
-                // eslint-disable-next-line @next/next/no-img-element -- brief: use the resizer URL as-is, never re-host
-                <img className="rl-still" src={foxStill("hero", stillWidth())} alt="A fennec fox character in orange shield sunglasses, a silver chain and a white varsity jacket" />
+                // eslint-disable-next-line @next/next/no-img-element -- static cut-out in public/fox
+                <img className="rl-still" src={foxStill("hero")} alt="A fennec fox character in orange shield sunglasses, a silver chain and a white varsity jacket" />
               )}
             </div>
             <h1 ref={word} className="rl-word" aria-label="Relay Agents">
@@ -354,8 +313,8 @@ export function RelayLanding() {
             <div className="rl-frame">
               <div className="rl-storystill">
                 {mode === "stills" && (
-                  // eslint-disable-next-line @next/next/no-img-element -- brief: use the resizer URL as-is, never re-host
-                  <img src={foxStill("story", stillWidth())} alt="The fox walking in a white varsity jacket" />
+                  // eslint-disable-next-line @next/next/no-img-element -- static cut-out in public/fox
+                  <img src={foxStill("story")} alt="The fox walking in a white varsity jacket" />
                 )}
               </div>
               <article className="rl-panel p1">
@@ -384,26 +343,48 @@ export function RelayLanding() {
         </section>
       </div>
 
-      {/* ── the cast ── */}
-      <section ref={cast} className="rl-cast" id="cast">
+      {/* ── how it works ── */}
+      <section ref={how} className="rl-how" id="how">
         <div className="rl-plabel">03 /</div>
         <h2>
-          MEET THE
+          HOW RELAY
           <br />
-          <em>CAST</em>
+          <em>RUNS YOUR EVENT</em>
         </h2>
-        <div ref={track} className="rl-track" aria-label="The five agents and you">
-          {[...CAST, ...CAST].map((c, i) => (
-            <div key={i} className="rl-card" tabIndex={i < CAST.length ? 0 : -1} aria-hidden={i >= CAST.length}>
-              <div className="rl-art" style={{ backgroundImage: `url("${CAST_SHEET}")`, backgroundPosition: `${POS_X[c.col]} ${POS_Y[c.row]}` }} />
-              <div className="rl-cap rl-label">
-                <span>{c.name}</span>
-                <span>{c.n} · {c.type}</span>
+        <p className="rl-how-lead">Five agents pass the event along like a baton. Each one ends in something real — a database row, a sent email or a PDF — and you approve anything that leaves the building.</p>
+
+        <div className="rl-steps">
+          <div className="rl-rail" aria-hidden><b /></div>
+          {STEPS.map((st) => (
+            <article key={st.n} className="rl-step rl-reveal">
+              <div className="rl-step-n">{st.n}</div>
+              <div>
+                <div className="rl-step-agent">{st.agent} agent</div>
+                <h3>{st.title}</h3>
+                <p>{st.body}</p>
+                <ul>{st.makes.map((m) => <li key={m}>{m}</li>)}</ul>
               </div>
-            </div>
+            </article>
           ))}
         </div>
-        <div className="rl-prog"><b ref={prog} /></div>
+
+        <div className="rl-modes">
+          <div className="rl-mode rl-reveal">
+            <div className="rl-plabel">FUNDED</div>
+            <h3>Hackathons, fests, anything with a budget</h3>
+            <p>All five agents run: budget split, sponsor tiers, recommended sponsors and pitches, schedule, registration and a partner report.</p>
+          </div>
+          <div className="rl-mode rl-reveal">
+            <div className="rl-plabel">FREE</div>
+            <h3>Seminars, talks and workshops</h3>
+            <p>No budget, no sponsors. The Planner spots it from the brief and Sponsorship sits out — four agents handle the rest.</p>
+          </div>
+          <div className="rl-mode rl-reveal">
+            <div className="rl-plabel">STUDENTS</div>
+            <h3>One account for every event</h3>
+            <p>Register in one tap, see what&apos;s coming up and what you attended, and download every certificate from the student portal.</p>
+          </div>
+        </div>
 
         <footer className="rl-foot">
           <div>
@@ -419,7 +400,7 @@ export function RelayLanding() {
           </div>
           <div className="rl-links">
             <a href="#walk">The agents <span>↗</span></a>
-            <a href="#cast">The cast <span>↗</span></a>
+            <a href="#how">How it works <span>↗</span></a>
             <a href="#top" onClick={(e) => (e.preventDefault(), go(0))}>Back to top <span>↗</span></a>
           </div>
         </footer>

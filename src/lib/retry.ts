@@ -2,6 +2,8 @@
 
 export class GeminiError extends Error {
   status: number;
+  /** The key itself is out of quota — other models on the same key won't help, switch keys. */
+  quota = false;
   constructor(message: string, status: number) {
     super(message);
     this.status = status;
@@ -17,7 +19,9 @@ export function geminiError(e: unknown) {
   const raw = e instanceof Error ? e.message : String(e);
   try {
     const { error } = JSON.parse(raw);
-    return new GeminiError(`Gemini: ${String(error.message).split(". ")[0]}.`, Number(error.code) || 0);
+    const err = new GeminiError(`Gemini: ${String(error.message).split(". ")[0]}.`, Number(error.code) || 0);
+    err.quota = err.status === 429 && /quota/i.test(String(error.message));
+    return err;
   } catch {
     return new GeminiError(raw, 0);
   }
@@ -32,7 +36,7 @@ export async function withRetry<T>(fn: () => Promise<T>, waits = [2000]): Promis
       return await fn();
     } catch (e) {
       const err = geminiError(e);
-      if (!RETRYABLE.has(err.status) || i >= waits.length) throw err;
+      if (!RETRYABLE.has(err.status) || err.quota || i >= waits.length) throw err;
       await new Promise((r) => setTimeout(r, waits[i]));
     }
   }
@@ -45,7 +49,19 @@ export async function withFallback<T>(models: string[], call: (model: string) =>
       return await withRetry(() => call(models[i]), waits);
     } catch (e) {
       const err = geminiError(e);
-      if (!RETRYABLE.has(err.status) || i >= models.length - 1) throw err;
+      if (!RETRYABLE.has(err.status) || err.quota || i >= models.length - 1) throw err;
+    }
+  }
+}
+
+/** Try each API key in turn; move to the next only when one is out of quota (429). */
+export async function withKeys<T>(keys: string[], call: (key: string) => Promise<T>): Promise<T> {
+  for (let i = 0; ; i++) {
+    try {
+      return await call(keys[i]);
+    } catch (e) {
+      const err = geminiError(e);
+      if (err.status !== 429 || i >= keys.length - 1) throw err;
     }
   }
 }

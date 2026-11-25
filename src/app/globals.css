@@ -52,10 +52,10 @@
   --d-ink: #f5ede5;
   --d-ink2: #a99b8e;
   --d-ink3: #71655b;
-  --s1: #f0682a;
+  --s1: #ec6426;
   --s2: #338ced;
   --s3: #00a888;
-  --s4: #d28e05;
+  --s4: #c08304;
   --s5: #e24d8b;
   --good: #0aac23;
   --warn: #fbb315;
@@ -106,3 +106,10 @@ body {
   }
 }
 
+
+/* Desk motion: agent-page ripple and the needs → makes flow line. */
+@keyframes desk-ripple { 0% { transform: scale(0.85); opacity: 0.7; } 100% { transform: scale(1.35); opacity: 0; } }
+@keyframes desk-flow { 0% { transform: translateX(-2rem); } 100% { transform: translateX(6rem); } }
+@media (prefers-reduced-motion: reduce) {
+  .desk [class*="animation:desk-"], .desk .animate-ping { animation: none !important; }
+}

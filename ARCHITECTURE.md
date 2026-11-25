@@ -36,6 +36,9 @@ EventDesk (client) calls runAgent(event, name) for each agent IN ORDER, UI updat
 ```
 
 Every run is logged to `agent_runs` → activity feed + pipeline card status. Planner failure stops the chain.
+The composer picks which agents run (`?run=planner,comms`); any agent can also run alone from its page.
+**Free events:** the Planner sets `plan.kind = "free"` (seminars, talks, no budget) → budget 0, no tiers, Sponsorship skipped, report addressed to the club.
+**Recommended sponsors:** Sponsorship asks Gemini for 8 real companies → `plan.suggestions` (no emails); the organiser adds a contact to turn one into a lead.
 Agents with no input (no leads / no volunteers) skip with a message instead of failing.
 
 ## Files
@@ -43,13 +46,16 @@ Agents with no input (no leads / no volunteers) skip with a message instead of f
 | Path | What |
 |---|---|
 | `src/app/page.tsx`, `src/app/landing.css`, `src/components/landing/RelayLanding.tsx` | Landing: giant wordmark, scroll-scrubbed fox behind hero + pinned story, cast carousel (6 characters = 5 agents + you), menu, RELAYBAR/Space stepper, Lenis smooth scroll. Stills on phones / reduced motion |
-| `src/lib/fox.ts`, `src/components/FoxCanvas.tsx`, `src/components/FoxBackdrop.tsx` | Fox engine: mp4box (CDN) + WebCodecs decode every frame once → JPEG blobs → LRU ImageBitmaps → canvas with sub-frame blend; `<video>` capture fallback. Orange duotone = canvas grayscale + `mix-blend-mode: multiply` over a hot gradient. Also in the desk sidebar (each section owns a slice of the orbit) and the login side panels |
+| `src/lib/fox.ts`, `src/components/FoxCanvas.tsx`, `src/components/FoxBackdrop.tsx` | Fox engine: 241 pre-cut transparent WebP frames (`public/fox/NNN.webp`, matted offline from the Kling clip) fetched once → blobs → LRU ImageBitmaps → canvas with sub-frame blend. The fox is drawn in true colour over a hot gradient. Also in the desk sidebar (each section owns a slice of the orbit) and the login side panels |
 | `src/app/actions.ts` | **All** Server Actions: 5 agents, `runAgent`, organiser actions (send pitches, set status, email shifts, reminders, certificates, report), public `register` |
 | `src/lib/server.ts` | `db()`, `llm()`, `sendMail()`, `requireAdmin()` |
 | `src/lib/schedule.ts` (+ `.test.ts`) | Deterministic volunteer assignment, no overlaps |
 | `src/lib/pdf.ts`, `src/lib/report.ts` | Certificate + report PDFs |
 | `src/lib/agents.ts`, `src/lib/types.ts` | Agent list, row types |
-| `src/app/dashboard/page.tsx` | New event + events list |
+| `src/app/dashboard/page.tsx` | Organiser home: composer + agent picker, lifetime KPIs, "Needs you" inbox, health rings, upcoming cards, reach trend, activity heatmap |
+| `src/app/dashboard/past/page.tsx`, `src/app/dashboard/agents/[agent]/page.tsx` | Past events archive; per-agent pages (about, run alone via `RunPanel`, history) |
+| `src/lib/desk.ts` | `allEvents()` — every event with children, split upcoming/past |
+| `src/components/desk/{fx,EventCard,RunPanel,nav}.tsx` | Animated charts (count-up, sparkline, area trend, rings, heatmap, paired bars), event card, single-agent runner, home sidebar |
 | `src/app/dashboard/[id]/page.tsx`, `src/components/desk/EventDesk.tsx` | Event desk (dark): sidebar with Overview + one page per agent (Planner, Sponsorship, Logistics, Comms, Reporting), each with stat tiles + charts |
 | `src/components/desk/{shell,charts,ui,icons}.tsx` | App shell (sidebar / mobile pills), SVG charts (segmented bar, bar list, line, shift timeline, milestones, meter — all with hover tooltips), dark UI kit |
 | `src/app/e/[id]/page.tsx`, `src/components/RegisterForm.tsx` | Public registration |
@@ -61,7 +67,7 @@ Agents with no input (no leads / no volunteers) skip with a message instead of f
 
 ## Data model
 
-`events`, `sponsors` (status: lead → drafted → contacted → replied → confirmed | declined), `volunteers`, `tasks`, `attendees` (unique per event+email), `agent_runs`, `students` (portal accounts; linked to `attendees` by email). See `supabase/schema.sql`.
+`events` (`plan` jsonb also holds `kind` and `suggestions`), `sponsors` (status: lead → drafted → contacted → replied → confirmed | declined), `volunteers`, `tasks`, `attendees` (unique per event+email), `agent_runs`, `students` (portal accounts; linked to `attendees` by email). See `supabase/schema.sql`.
 
 ## UI direction
 

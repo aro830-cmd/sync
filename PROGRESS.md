@@ -55,3 +55,5 @@ Claude's working memory for this project. Read this first when resuming. See `AR
 - Testing the desk with Playwright: log in via `http://admin:<pass>@localhost:3000/dashboard` once, then navigate to the plain URL (fetch refuses URLs with credentials).
 
 - 26 Nov: Turbopack sometimes misses edits to `globals.css` (OneDrive). If a style change doesn't show, append a newline to the file or restart `npm run dev`.
+
+- 26 Nov (late): Dashboard v2 in phases — (1) Planner free/funded (`plan.kind`), Sponsorship recommends 8 real companies (`plan.suggestions`, accept with an email / dismiss), free report copy, `supabase/seed-history.mjs` demo history; (2) new home, past events, per-agent pages with run-alone, animated charts in `fx.tsx`, palette s1 #ec6426 / s4 #c08304 re-validated; (3) event desk deep links `?s=`, composer agent picker `?run=`, free-event views; (4) student portal upcoming / past / certificates; (5) landing: cast carousel replaced by scroll-revealed "How it works". No schema change (all new fields live in `events.plan`). Gemini quota was exhausted at the end of the session, so recommendation output wasn't verified live (UI was).

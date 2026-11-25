@@ -40,6 +40,7 @@ function parseLines(text: string) {
 // ───────────────────────── agents ─────────────────────────
 
 type Plan = {
+  kind: "funded" | "free";
   name: string;
   theme: string;
   date: string;
@@ -55,13 +56,16 @@ async function planner(eventId: string) {
   const ev = await getEvent(eventId);
   const p = await llm<Plan>(`You are the Planner agent for a college technical club in Bengaluru, India. Today is ${TODAY()}.
 Turn this one-line brief into an event plan. Brief: """${ev.brief}"""
-Return JSON: {"name": string, "theme": string, "date": "YYYY-MM-DD" (future date), "budget": integer INR,
+First decide "kind": "free" when the event needs no money and no sponsors (a seminar, talk, workshop or meetup with no budget given,
+or the brief says free / ₹0 / no budget); otherwise "funded" (hackathons, fests, anything with a budget).
+Return JSON: {"kind": "funded"|"free", "name": string, "theme": string, "date": "YYYY-MM-DD" (future date), "budget": integer INR (0 if free),
 "expected_attendees": integer, "venue": string (a plausible campus hall),
-"budget_split": [{"head": string, "amount": integer}] (4-6 heads, sums to budget),
-"tiers": [{"name": "Title"|"Gold"|"Silver"|"Community", "amount": integer INR, "perks": [string]}] (3-4 tiers),
+"budget_split": [{"head": string, "amount": integer}] (funded: 4-6 heads summing to budget; free: []),
+"tiers": [{"name": "Title"|"Gold"|"Silver"|"Community", "amount": integer INR, "perks": [string]}] (funded: 3-4 tiers; free: []),
 "timeline": [{"date": "YYYY-MM-DD", "milestone": string}] (5-7 milestones from today to event day)}.
 If the brief omits a value, choose a sensible one.`);
   if (!p.name || !/^\d{4}-\d{2}-\d{2}$/.test(p.date)) throw new Error("Planner returned an incomplete plan.");
+  const free = p.kind === "free";
   await must(
     db()
       .from("events")
@@ -69,24 +73,47 @@ If the brief omits a value, choose a sensible one.`);
         name: p.name,
         theme: p.theme,
         date: p.date,
-        budget: Math.round(p.budget),
+        budget: free ? 0 : Math.round(p.budget),
         expected_attendees: Math.round(p.expected_attendees),
         venue: p.venue,
         // Merge so a re-plan keeps what later agents wrote (e.g. comms).
-        plan: { ...ev.plan, budget_split: p.budget_split, tiers: p.tiers, timeline: p.timeline },
+        plan: { ...ev.plan, kind: free ? "free" : "funded", budget_split: free ? [] : p.budget_split, tiers: free ? [] : p.tiers, timeline: p.timeline },
       })
       .eq("id", eventId),
   );
   return {
-    summary: `Planned ${p.name}: ${inr(p.budget)} across ${p.budget_split.length} heads, ${p.tiers.length} sponsor tiers`,
+    summary: free
+      ? `Planned ${p.name}: free event, ${p.timeline.length} milestones — no budget or sponsors needed`
+      : `Planned ${p.name}: ${inr(p.budget)} across ${p.budget_split.length} heads, ${p.tiers.length} sponsor tiers`,
     output: p,
   };
 }
 
+type Suggestion = { company: string; why: string; fit_score: number; tier: string };
+
 async function sponsorship(eventId: string) {
   const ev = await getEvent(eventId);
-  const leads = await must(db().from("sponsors").select("id, company").eq("event_id", eventId).eq("status", "lead"));
-  if (!leads.length) return { summary: "Skipped — no new sponsor leads. Add companies on the Sponsors tab.", output: null };
+  if (ev.plan?.kind === "free") return { summary: "Skipped — free event, no sponsors needed", output: null };
+  const all = await must(db().from("sponsors").select("id, company, status").eq("event_id", eventId));
+  const leads = all.filter((s) => s.status === "lead");
+
+  // Recommend real companies the club hasn't approached yet. No contact emails: the organiser adds one on accept.
+  const known = new Set(all.map((s) => s.company.toLowerCase()));
+  const rec = await llm<{ suggestions: Suggestion[] }>(
+    `You are the Sponsorship agent for "${ev.name}" (${ev.theme}), on ${ev.date} at ${ev.venue}, Bengaluru, ~${ev.expected_attendees} student attendees.
+Sponsor tiers: ${JSON.stringify(ev.plan?.tiers ?? [])}
+Recommend 8 real companies that plausibly sponsor college tech events in India and fit this theme and audience
+(developer tools, cloud, startups, edtech, local tech firms). Skip these, already approached: ${JSON.stringify([...known])}.
+For each: a one-sentence reason specific to this event, a fit score 0-100, and the best-fit tier name.
+Return JSON: {"suggestions": [{"company": string, "why": string, "fit_score": integer, "tier": string}]}`,
+  );
+  const suggestions = (rec.suggestions ?? [])
+    .filter((s) => s.company && !known.has(s.company.toLowerCase()))
+    .map((s) => ({ ...s, fit_score: Math.round(s.fit_score) }))
+    .sort((a, b) => b.fit_score - a.fit_score)
+    .slice(0, 8);
+  await must(db().from("events").update({ plan: { ...ev.plan, suggestions } }).eq("id", eventId));
+  if (!leads.length) return { summary: `Recommended ${suggestions.length} sponsors — add a contact email to pitch one`, output: { suggestions } };
 
   // Small integer keys instead of UUIDs: the model echoes them back reliably.
   const r = await llm<{ pitches: { n: number; tier: string; fit_score: number; subject: string; body: string }[] }>(
@@ -106,7 +133,7 @@ Return JSON: {"pitches": [{"n": integer (same n), "tier": string, "fit_score": i
         .eq("id", leads[p.n].id),
     );
   }
-  return { summary: `Drafted ${pitches.length} pitches — waiting for your approval to send`, output: pitches };
+  return { summary: `Drafted ${pitches.length} pitches — waiting for your approval to send · ${suggestions.length} new sponsors recommended`, output: { pitches, suggestions } };
 }
 
 async function logistics(eventId: string) {
@@ -154,15 +181,21 @@ Return JSON: {"announcement": string, "reminder_subject": string, "reminder_body
 async function reporting(eventId: string) {
   const ev = await getEvent(eventId);
   const s = await reportStats(eventId);
+  const free = ev.plan?.kind === "free";
   const r = await llm<{ summary: string }>(
-    `You are the Reporting agent. Write a 120-180 word post-event summary for sponsors of "${ev.name}" (${ev.theme}),
+    free
+      ? `You are the Reporting agent. Write a 120-160 word post-event summary for the club and department of "${ev.name}" (${ev.theme}),
+held ${ev.date} at ${ev.venue}. It was a free event with no sponsors. Registered: ${s.registered}. Attended: ${s.attended}.
+Thank attendees and volunteers, state the reach honestly using only these numbers, and suggest one thing for next time. Plain prose.
+Return JSON: {"summary": string}`
+      : `You are the Reporting agent. Write a 120-180 word post-event summary for sponsors of "${ev.name}" (${ev.theme}),
 held ${ev.date} at ${ev.venue}. Registered: ${s.registered}. Attended: ${s.attended}.
 Confirmed partners: ${JSON.stringify(s.confirmed)}. Tier perks promised: ${JSON.stringify(ev.plan?.tiers ?? [])}.
 Thank partners, state the reach honestly using only these numbers, and list delivered perks. Plain prose.
 Return JSON: {"summary": string}`,
   );
   await must(db().from("events").update({ summary: r.summary }).eq("id", eventId));
-  return { summary: `Sponsor report ready — ${s.attended} attended, ${s.confirmed.length} partners`, output: r };
+  return { summary: free ? `Event report ready — ${s.attended} attended of ${s.registered} registered` : `Sponsor report ready — ${s.attended} attended, ${s.confirmed.length} partners`, output: r };
 }
 
 const RUNNERS: Record<AgentName, (id: string) => Promise<{ summary: string; output: unknown }>> = {
@@ -227,6 +260,28 @@ export async function addLeads(eventId: string, text: string) {
     if (!l.length) throw new Error('No valid lines. Use "Company, email" per line.');
     await must(db().from("sponsors").insert(l.map(([company, contact_email]) => ({ event_id: eventId, company, contact_email }))));
     return `Added ${l.length} sponsor lead${l.length > 1 ? "s" : ""}`;
+  });
+}
+
+/** Turn an agent-recommended company into a lead (needs a real contact email), or drop it. */
+export async function acceptSuggestion(eventId: string, company: string, email: string) {
+  return attempt(eventId, "sponsorship", async () => {
+    email = email.trim().toLowerCase();
+    if (!EMAIL.test(email)) throw new Error("Enter a valid contact email for this company.");
+    const ev = await getEvent(eventId);
+    const s = (ev.plan?.suggestions ?? []).find((x: Suggestion) => x.company === company);
+    if (!s) throw new Error("That suggestion is gone — run the Sponsorship agent again.");
+    await must(db().from("sponsors").insert({ event_id: eventId, company, contact_email: email, tier: s.tier, fit_score: s.fit_score }));
+    await must(db().from("events").update({ plan: { ...ev.plan, suggestions: ev.plan.suggestions.filter((x: Suggestion) => x !== s) } }).eq("id", eventId));
+    return `${company} added as a lead — run Sponsorship to draft its pitch`;
+  });
+}
+
+export async function dismissSuggestion(eventId: string, company: string) {
+  return attempt(eventId, "sponsorship", async () => {
+    const ev = await getEvent(eventId);
+    await must(db().from("events").update({ plan: { ...ev.plan, suggestions: (ev.plan?.suggestions ?? []).filter((x: Suggestion) => x.company !== company) } }).eq("id", eventId));
+    return `Dismissed ${company}`;
   });
 }
 

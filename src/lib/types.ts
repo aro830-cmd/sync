@@ -10,6 +10,8 @@ export type EventRow = {
   summary: string | null;
   created_at: string;
   plan: {
+    kind?: "funded" | "free";
+    suggestions?: { company: string; why: string; fit_score: number; tier: string }[];
     budget_split?: { head: string; amount: number }[];
     tiers?: { name: string; amount: number; perks: string[] }[];
     timeline?: { date: string; milestone: string }[];
@@ -32,3 +34,6 @@ export type Volunteer = { id: string; name: string; email: string; skills: strin
 export type Task = { id: string; title: string; skill: string | null; starts_at: string; ends_at: string; volunteer_id: string | null };
 export type Attendee = { id: string; name: string; email: string; usn: string | null; checked_in: boolean; certificate_sent: boolean; created_at: string };
 export type Run = { id: string; agent: string; summary: string; ok: boolean; created_at: string };
+
+/** A free event (seminar, talk) has no budget and no sponsors. */
+export const isFree = (e: Pick<EventRow, "plan">) => e.plan?.kind === "free";

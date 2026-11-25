@@ -54,10 +54,10 @@ export function Shell({ head, groups, children, fox = scrollFrac }: { head?: Rea
             </div>
           ))}
         </nav>
-        {/* Mascot: walks and orbits as you scroll and switch sections. Multiply over the gradient = orange duotone. */}
+        {/* Mascot: walks and orbits as you scroll and switch sections. True-colour cut-out frames over the gradient. */}
         <div className="relative mb-3 h-[150px] overflow-hidden rounded-2xl border border-d-line" style={{ background: "radial-gradient(120% 90% at 50% 35%, #ff7a2e 0%, #c2410c 38%, #3b1407 75%, #120805 100%)" }}>
           <div className={`absolute inset-0 transition-opacity duration-700 ${foxOn ? "opacity-100" : "opacity-0"}`}>
-            <FoxCanvas progress={fox} mode="card" onReady={() => setFoxOn(true)} className="mix-blend-multiply [filter:grayscale(1)_contrast(1.25)_brightness(1.05)]" />
+            <FoxCanvas progress={fox} mode="card" onReady={() => setFoxOn(true)} />
           </div>
           <div aria-hidden className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent" />
           <div className="absolute bottom-2.5 left-3 text-[10px] font-medium uppercase tracking-[0.16em] text-white/80">Relay · on the move</div>

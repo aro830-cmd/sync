@@ -4,8 +4,8 @@ import { AnimatePresence, motion } from "motion/react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState, useTransition, type ReactNode } from "react";
 import * as act from "@/app/actions";
-import { AGENTS, type AgentName } from "@/lib/agents";
-import type { Attendee, EventRow, Run, Sponsor, Task, Volunteer } from "@/lib/types";
+import { AGENTS, agentsFor, type AgentName } from "@/lib/agents";
+import { isFree, type Attendee, type EventRow, type Run, type Sponsor, type Task, type Volunteer } from "@/lib/types";
 import { BarList, LineChart, Meter, MilestoneTrack, SegmentedBar, ShiftTimeline, inr } from "./charts";
 import { Icon } from "./icons";
 import { Shell } from "./shell";
@@ -34,12 +34,18 @@ export function EventDesk(props: Data) {
 
 function Desk(d: Data) {
   const { event } = d;
-  const [section, setSection] = useState<Section>("overview");
+  const free = isFree(event);
+  const agents = agentsFor(free);
+  const params = useSearchParams();
+  // ?s=<agent> deep-links straight to an agent page (from the home inbox and the agent pages).
+  const [section, setSection] = useState<Section>(() => {
+    const s = params.get("s");
+    return agents.some((a) => a.id === s) ? (s as AgentName) : "overview";
+  });
   const [live, setLive] = useState<Live>({});
   const [running, setRunning] = useState(false);
   const notify = useToast();
   const router = useRouter();
-  const params = useSearchParams();
   const started = useRef(false);
 
   async function run(list: AgentName[]) {
@@ -54,12 +60,14 @@ function Desk(d: Data) {
     setRunning(false);
   }
 
-  // Arriving from "New event" → run the whole pipeline once.
+  // Arriving from "New event" → run the agents picked in the composer once (?run=planner,comms; "1" = all).
   useEffect(() => {
-    if (params.get("run") === "1" && !started.current) {
+    const want = params.get("run");
+    if (want && !started.current) {
       started.current = true;
       router.replace(`/dashboard/${event.id}`);
-      run(AGENTS.map((a) => a.id));
+      const list = want === "1" ? AGENTS.map((a) => a.id) : AGENTS.map((a) => a.id).filter((a) => want.split(",").includes(a));
+      run(list);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -81,7 +89,7 @@ function Desk(d: Data) {
   );
 
   // Fox: each section owns a slice of the orbit; scrolling walks through that slice.
-  const order: Section[] = ["overview", ...AGENTS.map((a) => a.id)];
+  const order: Section[] = ["overview", ...agents.map((a) => a.id)];
   const fox = () => {
     const max = document.documentElement.scrollHeight - innerHeight;
     return (order.indexOf(section) + (max > 0 ? scrollY / max : 0)) / order.length;
@@ -92,11 +100,11 @@ function Desk(d: Data) {
       fox={fox}
       head={head}
       groups={[
-        { items: [{ key: "back", label: "All events", icon: Icon.events, href: "/dashboard" }] },
+        { items: [{ key: "back", label: "All events", icon: Icon.events, href: "/dashboard" }, { key: "past", label: "Past events", icon: Icon.past, href: "/dashboard/past" }] },
         { items: [{ key: "overview", label: "Overview", icon: Icon.overview, active: section === "overview", onClick: () => go("overview") }] },
         {
           label: "Agents",
-          items: AGENTS.map((a) => ({ key: a.id, label: a.name, icon: Icon[a.id], active: section === a.id, onClick: () => go(a.id), dot: DOT[state(a.id)] })),
+          items: agents.map((a) => ({ key: a.id, label: a.name, icon: Icon[a.id], active: section === a.id, onClick: () => go(a.id), dot: DOT[state(a.id)] })),
         },
       ]}
     >
@@ -172,7 +180,9 @@ type Step = { stage: string; text: string; go?: Section; agent?: AgentName; cta:
 function nextStep({ event, sponsors, volunteers, tasks, attendees }: Data): Step {
   const has = (s: Sponsor["status"]) => sponsors.filter((x) => x.status === s).length;
   const checked = attendees.filter((a) => a.checked_in);
-  if (!event.plan?.budget_split) return { stage: "Plan", text: "Let the Planner turn the brief into a budget, sponsor tiers and a timeline.", agent: "planner", cta: "Run Planner" };
+  if (!event.plan?.timeline) return { stage: "Plan", text: "Let the Planner turn the brief into a plan — budget and sponsor tiers for funded events, a timeline for every event.", agent: "planner", cta: "Run Planner" };
+  if (isFree(event)) return freeStep({ event, sponsors, volunteers, tasks, attendees } as Data);
+  if (!sponsors.length && event.plan?.suggestions?.length) return { stage: "Sponsors", text: `The agent recommended ${event.plan.suggestions.length} companies. Add a contact email to the ones you want to pitch.`, go: "sponsorship", cta: "Review recommendations" };
   if (!sponsors.length) return { stage: "Sponsors", text: "Add the companies you want to approach — the Sponsorship agent writes each pitch.", go: "sponsorship", cta: "Add sponsor leads" };
   if (has("lead")) return { stage: "Sponsors", text: `${has("lead")} new lead${has("lead") > 1 ? "s" : ""} waiting — draft tailored pitches for them.`, agent: "sponsorship", cta: "Run Sponsorship" };
   if (has("drafted")) return { stage: "Sponsors", text: `${has("drafted")} pitch${has("drafted") > 1 ? "es are" : " is"} drafted. Read, edit if needed, then approve to send.`, go: "sponsorship", cta: "Review pitches" };
@@ -184,6 +194,18 @@ function nextStep({ event, sponsors, volunteers, tasks, attendees }: Data): Step
   if (checked.some((a) => !a.certificate_sent)) return { stage: "After the event", text: `${checked.filter((a) => !a.certificate_sent).length} checked-in attendee(s) still need a certificate.`, go: "comms", cta: "Send certificates" };
   if (!event.summary) return { stage: "Report", text: "Write the sponsor report from real attendance and confirmed partners.", agent: "reporting", cta: "Run Reporting" };
   return { stage: "Wrap-up", text: has("confirmed") ? "Report ready — email it to your confirmed partners." : "All stages done. Confirm partners to send them the report.", go: has("confirmed") ? "reporting" : "sponsorship", cta: has("confirmed") ? "Open report" : "Open sponsors" };
+}
+
+function freeStep({ event, volunteers, tasks, attendees }: Data): Step {
+  const checked = attendees.filter((a) => a.checked_in);
+  if (!volunteers.length) return { stage: "Logistics", text: "Free event — no sponsors needed. Add your volunteers so the day can be scheduled.", go: "logistics", cta: "Add volunteers" };
+  if (!tasks.length) return { stage: "Logistics", text: "Build the run-of-show and assign volunteers with zero clashes.", agent: "logistics", cta: "Run Logistics" };
+  if (!event.plan?.comms) return { stage: "Comms", text: "Draft the announcement and attendee reminder.", agent: "comms", cta: "Run Comms" };
+  if (!attendees.length) return { stage: "Registration", text: "Share the announcement — registrations appear here as they come in.", go: "comms", cta: "Open registrations" };
+  if (!checked.length) return { stage: "Event day", text: `${attendees.length} registered. Send a reminder, then check people in at the door.`, go: "comms", cta: "Open check-in" };
+  if (checked.some((a) => !a.certificate_sent)) return { stage: "After the event", text: `${checked.filter((a) => !a.certificate_sent).length} checked-in attendee(s) still need a certificate.`, go: "comms", cta: "Send certificates" };
+  if (!event.summary) return { stage: "Report", text: "Write the club report from real attendance.", agent: "reporting", cta: "Run Reporting" };
+  return { stage: "Wrap-up", text: "All stages done. Download the report PDF for your department.", go: "reporting", cta: "Open report" };
 }
 
 function NextStep({ step, busy, onRun, onGo }: { step: Step; busy: boolean; onRun: (a: AgentName[]) => void; onGo: (s: Section) => void }) {
@@ -217,6 +239,8 @@ function NextStep({ step, busy, onRun, onGo }: { step: Step; busy: boolean; onRu
 
 function Overview({ d, state, running, onRun, onGo }: { d: Data; state: (a: AgentName) => AgentState; running: boolean; onRun: (a: AgentName[]) => void; onGo: (s: Section) => void }) {
   const { event, sponsors, volunteers, tasks, attendees, runs } = d;
+  const free = isFree(event);
+  const agents = agentsFor(free);
   const notify = useToast();
   const confirmed = sponsors.filter((s) => s.status === "confirmed");
   const raised = confirmed.reduce((sum, s) => sum + (event.plan?.tiers?.find((t) => t.name === s.tier)?.amount ?? 0), 0);
@@ -235,8 +259,8 @@ function Overview({ d, state, running, onRun, onGo }: { d: Data; state: (a: Agen
             <Button variant="ghost" onClick={() => navigator.clipboard.writeText(location.origin + regUrl).then(() => notify(true, "Registration link copied"))}>
               Copy registration link
             </Button>
-            <Button pending={running} onClick={() => onRun(AGENTS.map((a) => a.id))}>
-              {running ? "Agents working" : "Run all agents"}
+            <Button pending={running} onClick={() => onRun(agents.map((a) => a.id))}>
+              {running ? "Agents working" : `Run all ${agents.length} agents`}
             </Button>
           </>
         }
@@ -245,8 +269,17 @@ function Overview({ d, state, running, onRun, onGo }: { d: Data; state: (a: Agen
       <NextStep step={nextStep(d)} busy={running} onRun={onRun} onGo={onGo} />
 
       <div className="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
+        {free ? (
+          <>
+            <Stat label="Entry" value="Free" hint="No budget, no sponsors" dot="bg-s3" />
+            <Stat label="Seats" value={event.expected_attendees ?? "—"} hint={<span className="block"><span className="mb-2 block">{attendees.length} taken</span><Meter value={attendees.length} max={event.expected_attendees || 1} color="bg-s1" track="bg-s1/15" height="h-1.5" /></span>} dot="bg-s1" />
+          </>
+        ) : (
+          <>
         <Stat label="Budget" value={inr(event.budget)} hint={`${event.plan?.budget_split?.length ?? 0} cost heads`} dot="bg-s1" />
         <Stat label="Sponsorship raised" value={inr(raised)} hint={<span className="block"><span className="mb-2 block">{confirmed.length} of {sponsors.length} partners confirmed</span><Meter value={raised} max={event.budget ?? 1} color="bg-s2" track="bg-s2/15" height="h-1.5" /></span>} dot="bg-s2" />
+          </>
+        )}
         <Stat label="Registered" value={attendees.length} hint={<span className="block"><span className="mb-2 block">{checked} checked in</span><Meter value={checked} max={attendees.length || 1} color="bg-s3" track="bg-s3/15" height="h-1.5" /></span>} dot="bg-s3" />
         <Stat label="Volunteer shifts" value={tasks.length} hint={`${volunteers.length} volunteers · ${open ? `${open} open` : "all covered"}`} dot="bg-s4" />
       </div>
@@ -254,10 +287,10 @@ function Overview({ d, state, running, onRun, onGo }: { d: Data; state: (a: Agen
       <div className="mt-5">
         <div className="mb-3 flex items-baseline justify-between">
           <Label>Agent pipeline</Label>
-          <span className="text-[12px] text-d-ink3">{AGENTS.filter((a) => state(a.id) === "done").length}/5 complete</span>
+          <span className="text-[12px] text-d-ink3">{agents.filter((a) => state(a.id) === "done").length}/{agents.length} complete</span>
         </div>
-        <ol className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-          {AGENTS.map((a, i) => {
+        <ol className={`grid gap-3 sm:grid-cols-2 ${free ? "lg:grid-cols-4" : "lg:grid-cols-5"}`}>
+          {agents.map((a, i) => {
             const st = state(a.id);
             const last = runs.find((r) => r.agent === a.id);
             return (
@@ -323,17 +356,10 @@ function cumulative(attendees: Attendee[]) {
 
 // ───────────── agent pages ─────────────
 
-const AGENT_SUB: Record<AgentName, string> = {
-  planner: "Turns the one-line brief into a budget, sponsor tiers and a timeline.",
-  sponsorship: "Scores each sponsor lead for fit and drafts a tailored pitch. Nothing is sent until you approve.",
-  logistics: "Writes the run-of-show and assigns volunteers to shifts — guaranteed zero clashes.",
-  comms: "Opens registration, drafts the announcement and reminder, and runs check-in and certificates.",
-  reporting: "Writes the sponsor report from real attendance and confirmed partners, as a PDF.",
-};
-
 function AgentPage({ d, agent, state, running, onRun, onGo }: { d: Data; agent: AgentName; state: AgentState; running: boolean; onRun: () => void; onGo: (s: Section) => void }) {
-  const a = AGENTS.find((x) => x.id === agent)!;
-  const i = AGENTS.indexOf(a);
+  const list = agentsFor(isFree(d.event));
+  const a = list.find((x) => x.id === agent)!;
+  const i = list.indexOf(a);
   const last = d.runs.find((r) => r.agent === agent);
   return (
     <>
@@ -341,19 +367,19 @@ function AgentPage({ d, agent, state, running, onRun, onGo }: { d: Data; agent: 
         eyebrow={
           <>
             <span className="grid size-6 place-items-center rounded-md border border-d-line bg-white/[0.04] text-d-ink2 [&>svg]:size-3.5">{Icon[agent]}</span>
-            Agent 0{i + 1} of 5
+            Agent 0{i + 1} of {list.length}
             <span className="mx-1 text-d-ink3/50">·</span>
             <span className={`size-1.5 rounded-full ${DOT[state]}`} />
             {state === "idle" ? "Not run yet" : state === "running" ? "Working…" : state === "failed" ? "Last run failed" : `Last run ${last ? ago(last.created_at) : ""}`}
           </>
         }
         title={`${a.name} agent`}
-        sub={AGENT_SUB[agent]}
+        sub={a.about}
         actions={
           <>
-            {i < 4 && (
-              <Button variant="ghost" onClick={() => onGo(AGENTS[i + 1].id)}>
-                Next: {AGENTS[i + 1].name} →
+            {i < list.length - 1 && (
+              <Button variant="ghost" onClick={() => onGo(list[i + 1].id)}>
+                Next: {list[i + 1].name} →
               </Button>
             )}
             <Button pending={running && state === "running"} disabled={running} onClick={onRun}>
@@ -379,18 +405,21 @@ function Planner({ event }: Data) {
   const plan = event.plan ?? {};
   const split = plan.budget_split ?? [];
   const days = event.date ? Math.ceil((Date.parse(event.date) - now) / 86_400_000) : null;
-  if (!split.length) return <Empty>Run the Planner to split the budget, set sponsor tiers and build the timeline.</Empty>;
+  const free = isFree(event);
+  if (!plan.timeline?.length) return <Empty>Run the Planner to build the plan — budget and sponsor tiers for funded events, a timeline for every event.</Empty>;
   return (
     <div className="space-y-3">
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Stat label="Total budget" value={inr(event.budget)} dot="bg-s1" />
+        {free ? <Stat label="Entry" value="Free" hint="The Planner marked this a free event" dot="bg-s3" /> : <Stat label="Total budget" value={inr(event.budget)} dot="bg-s1" />}
         <Stat label="Expected attendees" value={event.expected_attendees ?? "—"} hint={event.budget && event.expected_attendees ? `${inr(event.budget / event.expected_attendees)} per head` : undefined} />
-        <Stat label="Sponsor tiers" value={plan.tiers?.length ?? 0} hint={plan.tiers?.length ? `${inr(Math.max(...plan.tiers.map((t) => t.amount)))} top tier` : undefined} />
+        {free ? <Stat label="Milestones" value={plan.timeline.length} hint="From today to event day" /> : <Stat label="Sponsor tiers" value={plan.tiers?.length ?? 0} hint={plan.tiers?.length ? `${inr(Math.max(...plan.tiers.map((t) => t.amount)))} top tier` : undefined} />}
         <Stat label="Days to event" value={days == null ? "—" : days < 0 ? "Done" : days} hint={longDate(event.date)} />
       </div>
-      <Card title="Budget split" sub={`${inr(event.budget)} across ${split.length} cost heads`}>
-        <SegmentedBar parts={split.map((b) => ({ label: b.head, value: b.amount }))} />
-      </Card>
+      {!!split.length && (
+        <Card title="Budget split" sub={`${inr(event.budget)} across ${split.length} cost heads`}>
+          <SegmentedBar parts={split.map((b) => ({ label: b.head, value: b.amount }))} />
+        </Card>
+      )}
       <div className="grid gap-3 lg:grid-cols-[1.3fr_1fr]">
         {!!plan.timeline?.length && (
           <Card title="Timeline" sub="Milestones from today to event day">
@@ -405,6 +434,16 @@ function Planner({ event }: Data) {
             </ol>
           </Card>
         )}
+        {free ? (
+          <Card title="Why it's free" sub="No budget, no sponsors — fewer agents to run">
+            <ul className="space-y-2.5 text-[13px] text-d-ink2">
+              <li className="flex gap-2"><span className="text-s3">✓</span>Sponsorship is skipped entirely</li>
+              <li className="flex gap-2"><span className="text-s3">✓</span>Logistics, Comms and Reporting run as usual</li>
+              <li className="flex gap-2"><span className="text-s3">✓</span>The report goes to your club and department, not sponsors</li>
+            </ul>
+            <p className="mt-4 text-[12.5px] text-d-ink3">Wrong call? Edit the brief to include a budget (e.g. “₹20k”) and re-run the Planner.</p>
+          </Card>
+        ) : (
         <Card title="Sponsor tiers" sub="What each partner level pays and gets">
           <div className="space-y-2.5">
             {(plan.tiers ?? []).map((t, i) => (
@@ -423,6 +462,7 @@ function Planner({ event }: Data) {
             ))}
           </div>
         </Card>
+        )}
       </div>
     </div>
   );
@@ -545,10 +585,64 @@ function Sponsors({ event, sponsors }: Data) {
         </AnimatePresence>
       </Card>
 
+      <Suggestions event={event} />
+
       <Card title="Add sponsor leads" sub="One company per line — the agent drafts a pitch for each new lead">
         <AddLines label="Company, email" placeholder="Atlassian, university@atlassian.com" onAdd={(t) => act.addLeads(event.id, t)} />
       </Card>
     </div>
+  );
+}
+
+/** Real companies the agent recommended. Accepting one needs a contact email; then it's an ordinary lead. */
+function Suggestions({ event }: { event: EventRow }) {
+  const list = event.plan?.suggestions ?? [];
+  return (
+    <Card title="Recommended by the agent" sub={list.length ? "Real companies that fit this event. Add a contact email to turn one into a lead." : undefined}>
+      {list.length ? (
+        <ul className="grid gap-2 md:grid-cols-2">
+          <AnimatePresence initial={false}>
+            {list.map((s, i) => <Suggestion key={s.company} eventId={event.id} s={s} i={i} />)}
+          </AnimatePresence>
+        </ul>
+      ) : (
+        <Empty>Run the Sponsorship agent — it recommends 8 companies that fit this event.</Empty>
+      )}
+    </Card>
+  );
+}
+
+function Suggestion({ eventId, s, i }: { eventId: string; s: NonNullable<NonNullable<EventRow["plan"]>["suggestions"]>[number]; i: number }) {
+  const [email, setEmail] = useState("");
+  const [open, setOpen] = useState(false);
+  const [pending, go] = useAction();
+  return (
+    <motion.li layout initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, scale: 0.97 }} transition={{ duration: 0.35, ease, delay: i * 0.04 }} className="rounded-xl border border-d-line bg-black/20 p-3.5">
+      <div className="flex items-start gap-3">
+        <span className="grid size-10 shrink-0 place-items-center rounded-full border border-s4/40 text-[12px] font-semibold tabular-nums text-d-ink" style={{ background: `conic-gradient(var(--s4) ${s.fit_score * 3.6}deg, transparent 0)` }}>
+          <span className="grid size-8 place-items-center rounded-full bg-d-panel">{s.fit_score}</span>
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-baseline justify-between gap-2">
+            <span className="truncate text-[14px] font-medium">{s.company}</span>
+            <span className="shrink-0 text-[11px] text-d-ink3">{s.tier}</span>
+          </div>
+          <p className="mt-0.5 text-[12.5px] leading-snug text-d-ink2">{s.why}</p>
+        </div>
+      </div>
+      {open ? (
+        <form className="mt-3 flex gap-2" onSubmit={(e) => (e.preventDefault(), go(() => act.acceptSuggestion(eventId, s.company, email)))}>
+          <input autoFocus type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder={`partnerships@${s.company.split(" ")[0].toLowerCase()}.com`} aria-label={`Contact email for ${s.company}`}
+            className="h-9 min-w-0 flex-1 rounded-lg border border-d-line bg-black/30 px-3 text-[13px] text-d-ink outline-none placeholder:text-d-ink3 focus:border-white/25" />
+          <Button pending={pending} disabled={!email}>Add lead</Button>
+        </form>
+      ) : (
+        <div className="mt-3 flex justify-end gap-1.5">
+          <button disabled={pending} onClick={() => go(() => act.dismissSuggestion(eventId, s.company))} className="rounded-md px-2 py-1 text-[12px] text-d-ink3 transition-colors hover:text-d-ink">Dismiss</button>
+          <button onClick={() => setOpen(true)} className="rounded-md border border-d-line px-2.5 py-1 text-[12px] text-d-ink transition-colors hover:border-s1/50 hover:bg-s1/10">+ Add contact</button>
+        </div>
+      )}
+    </motion.li>
   );
 }
 
@@ -743,6 +837,7 @@ function Comms({ event, attendees }: Data) {
 
 function Reporting({ event, attendees, sponsors }: Data) {
   const [pending, go] = useAction();
+  const free = isFree(event);
   const checked = attendees.filter((a) => a.checked_in).length;
   const confirmed = sponsors.filter((s) => s.status === "confirmed");
   const amt = (s: Sponsor) => event.plan?.tiers?.find((t) => t.name === s.tier)?.amount ?? 0;
@@ -754,26 +849,39 @@ function Reporting({ event, attendees, sponsors }: Data) {
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Stat label="Attended" value={checked} hint={`of ${attendees.length} registered`} dot="bg-s3" />
         <Stat label="Attendance rate" value={`${rate}%`} hint={<Meter value={checked} max={attendees.length || 1} color="bg-s3" track="bg-s3/15" height="h-1.5" />} />
-        <Stat label="Partners" value={confirmed.length} dot="bg-s2" />
-        <Stat label="Sponsorship" value={inr(raised)} hint={event.budget ? `${Math.round((raised / event.budget) * 100)}% of the budget` : undefined} />
+        {free ? (
+          <>
+            <Stat label="Seats filled" value={event.expected_attendees ? `${Math.round((attendees.length / event.expected_attendees) * 100)}%` : "—"} hint={`${attendees.length} of ${event.expected_attendees ?? "?"} seats`} dot="bg-s2" />
+            <Stat label="Certificates" value={attendees.filter((a) => a.certificate_sent).length} hint="Sent to checked-in attendees" />
+          </>
+        ) : (
+          <>
+            <Stat label="Partners" value={confirmed.length} dot="bg-s2" />
+            <Stat label="Sponsorship" value={inr(raised)} hint={event.budget ? `${Math.round((raised / event.budget) * 100)}% of the budget` : undefined} />
+          </>
+        )}
       </div>
 
       <div className="grid gap-3 lg:grid-cols-[1.4fr_1fr]">
-        <Card title="Partner report" sub="Written by the Reporting agent from real numbers">
+        <Card title={free ? "Event report" : "Partner report"} sub="Written by the Reporting agent from real numbers">
           {event.summary ? <p className="text-[14.5px] leading-[1.75] whitespace-pre-wrap text-d-ink">{event.summary}</p> : <Empty>Run the Reporting agent after the event.</Empty>}
         </Card>
         <div className="space-y-3">
-          <Card title="Partner contributions" sub="Confirmed sponsors by tier amount">
-            {confirmed.length ? <BarList rows={confirmed.map((s) => ({ label: s.company, value: amt(s), note: s.tier ?? undefined }))} format={inr} color="bg-s2" /> : <Empty>No confirmed partners yet.</Empty>}
-          </Card>
+          {!free && (
+            <Card title="Partner contributions" sub="Confirmed sponsors by tier amount">
+              {confirmed.length ? <BarList rows={confirmed.map((s) => ({ label: s.company, value: amt(s), note: s.tier ?? undefined }))} format={inr} color="bg-s2" /> : <Empty>No confirmed partners yet.</Empty>}
+            </Card>
+          )}
           <Card title="Deliver">
             <div className="flex flex-col gap-2">
               <a href={`/api/report/${event.id}`} target="_blank" className="inline-flex h-9 items-center justify-center rounded-lg border border-d-line bg-white/[0.03] text-[13px] font-medium transition-colors hover:bg-white/[0.07]">
                 Open report PDF
               </a>
-              <Button variant="accent" pending={pending} disabled={!event.summary || !confirmed.length} onClick={() => go(() => act.sendReport(event.id))}>
-                Email report to {confirmed.length} partner{confirmed.length === 1 ? "" : "s"}
-              </Button>
+              {!free && (
+                <Button variant="accent" pending={pending} disabled={!event.summary || !confirmed.length} onClick={() => go(() => act.sendReport(event.id))}>
+                  Email report to {confirmed.length} partner{confirmed.length === 1 ? "" : "s"}
+                </Button>
+              )}
             </div>
           </Card>
         </div>

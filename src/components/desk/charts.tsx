@@ -12,14 +12,15 @@ export const SERIES = ["bg-s1", "bg-s2", "bg-s3", "bg-s4", "bg-s5"];
 const SERIES_VAR = ["var(--s1)", "var(--s2)", "var(--s3)", "var(--s4)", "var(--s5)"];
 const OTHER = "#5b5b61";
 
-export const inr = (n?: number | null) => `₹${Math.round(n ?? 0).toLocaleString("en-IN")}`;
+import { inr } from "@/lib/format";
+export { inr };
 const pct = (a: number, b: number) => (b ? Math.round((a / b) * 100) : 0);
 
 // ───────── tooltip ─────────
 
 type Tip = { x: number; y: number; body: ReactNode } | null;
 
-function useTip() {
+export function useTip() {
   const box = useRef<HTMLDivElement>(null);
   const [tip, setTip] = useState<Tip>(null);
   const show = (e: React.MouseEvent | React.FocusEvent, body: ReactNode) => {
@@ -31,7 +32,7 @@ function useTip() {
   return { box, tip, show, hide: () => setTip(null) };
 }
 
-function TipLayer({ tip }: { tip: Tip }) {
+export function TipLayer({ tip }: { tip: Tip }) {
   if (!tip) return null;
   return (
     <div
@@ -44,7 +45,7 @@ function TipLayer({ tip }: { tip: Tip }) {
   );
 }
 
-function useWidth<T extends HTMLElement>() {
+export function useWidth<T extends HTMLElement>() {
   const ref = useRef<T>(null);
   const [w, setW] = useState(0);
   useLayoutEffect(() => {
@@ -113,7 +114,8 @@ export function SegmentedBar({ parts, format = inr }: { parts: { label: string; 
 
 // ───────── bar list: one series, one colour (funnel, fit scores, partner amounts) ─────────
 
-export function BarList({ rows, max, format = String, color = "bg-s1" }: { rows: { label: string; value: number; note?: string }[]; max?: number; format?: (n: number) => string; color?: string }) {
+export function BarList({ rows, max, format: f = String, color = "bg-s1" }: { rows: { label: string; value: number; note?: string }[]; max?: number; format?: ((n: number) => string) | "inr"; color?: string }) {
+  const format = f === "inr" ? inr : f; // "inr" lets server pages pick the formatter without passing a function
   const { box, tip, show, hide } = useTip();
   const top = max ?? Math.max(1, ...rows.map((r) => r.value));
   return (
@@ -200,7 +202,7 @@ export function LineChart({ points, label }: { points: { t: number; v: number }[
   );
 }
 
-function niceMax(n: number) {
+export function niceMax(n: number) {
   if (n <= 4) return 4;
   const mag = 10 ** Math.floor(Math.log10(n));
   return [1, 2, 2.5, 5, 10].map((m) => m * mag).find((m) => m >= n)!;

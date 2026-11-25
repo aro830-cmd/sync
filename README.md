@@ -25,15 +25,18 @@ Next.js 16 + TypeScript · Tailwind v4 + motion · Gemini · Supabase Postgres �
    | `ADMIN_PASSCODE` | Any password; guards `/dashboard` |
    | `SESSION_SECRET` | Any long random string; signs student login cookies |
 
-3. New Supabase project only: run `supabase/schema.sql` in the SQL editor, then optionally `supabase/seed.sql` for the demo event (open `/dashboard/de000000-0000-4000-a000-000000000001`).
+3. New Supabase project only: run `supabase/schema.sql` in the SQL editor, then optionally `supabase/seed.sql` for the demo event (open `/dashboard/de000000-0000-4000-a000-000000000001`). For demo history (4 past + 2 upcoming events, fictional sponsors): `node --env-file=.env.local supabase/seed-history.mjs` (re-runnable).
 4. `npm run dev` → http://localhost:3000
 
 ## Routes
 
 - `/` — landing
-- `/admin/login` → `/dashboard` — organiser desk (passcode = `ADMIN_PASSCODE`)
+- `/admin/login` → `/dashboard` — organiser home: brief composer with agent picker, lifetime stats, "Needs you" inbox, upcoming events, charts
+- `/dashboard/past` — past events, registered vs attended, loyal partners, "Run it again"
+- `/dashboard/agents/[agent]` — one page per agent: what it does, run it alone on any event, its history
+- `/dashboard/[id]` — event desk (`?s=<agent>` opens an agent page)
 - `/e/[id]` — public event registration
-- `/student/signup`, `/student/login`, `/student` — student portal (my events, one-tap registration, certificate download after check-in)
+- `/student/signup`, `/student/login`, `/student` — student portal: upcoming (registered + open), past events, my certificates
 
 ## Checks
 
@@ -45,7 +48,7 @@ node src/lib/retry.test.ts      # Gemini retry/fallback self-check
 
 ## Credits
 
-Fox mascot video, stills and the cast sheet are Higgsfield generations hotlinked from their CDN (never re-hosted); mp4box.js and Lenis load from jsDelivr at runtime.
+Fox mascot frames and stills are Higgsfield generations, background-removed offline (BiRefNet) into transparent WebPs in `public/fox/` so the fox keeps its true colours; the cast sheet is hotlinked from their CDN. Lenis loads from jsDelivr at runtime.
 
 ## Demo accounts
 
