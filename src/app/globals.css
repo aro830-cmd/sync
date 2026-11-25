@@ -1,26 +1,108 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Warm dark + hot orange, matching the landing and the desk. "paper" = background, "ink" = foreground. */
+  --paper: #0c0907;
+  --paper-2: #1a1310;
+  --ink: #f5ede5;
+  --ink-2: #b0a294;
+  --ink-3: #7a6d62;
+  --line: rgba(255, 236, 220, 0.14);
+  --signal: #ff5a1f;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  --color-paper: var(--paper);
+  --color-paper-2: var(--paper-2);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-line: var(--line);
+  --color-signal: var(--signal);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  --font-serif: var(--font-serif);
+  --ease-out-quint: cubic-bezier(0.23, 1, 0.32, 1);
+
+  /* Organiser desk (dark). Values live on .desk below. */
+  --color-d-bg: var(--d-bg);
+  --color-d-panel: var(--d-panel);
+  --color-d-raise: var(--d-raise);
+  --color-d-line: var(--d-line);
+  --color-d-ink: var(--d-ink);
+  --color-d-ink2: var(--d-ink2);
+  --color-d-ink3: var(--d-ink3);
+  --color-s1: var(--s1);
+  --color-s2: var(--s2);
+  --color-s3: var(--s3);
+  --color-s4: var(--s4);
+  --color-s5: var(--s5);
+  --color-good: var(--good);
+  --color-warn: var(--warn);
+  --color-crit: var(--crit);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* Desk palette (warm dark + hot orange). Chart slots validated with dataviz validate_palette.js, dark, surface #15100d — all checks pass. */
+.desk {
+  color-scheme: dark;
+  --d-bg: #0c0907;
+  --d-panel: #15100d;
+  --d-raise: #1e1713;
+  --d-line: rgba(255, 236, 220, 0.08);
+  --d-ink: #f5ede5;
+  --d-ink2: #a99b8e;
+  --d-ink3: #71655b;
+  --s1: #f0682a;
+  --s2: #338ced;
+  --s3: #00a888;
+  --s4: #d28e05;
+  --s5: #e24d8b;
+  --good: #0aac23;
+  --warn: #fbb315;
+  --crit: #dc3c3d;
+  background: var(--d-bg);
+  color: var(--d-ink);
+  font-feature-settings: "ss01", "cv11", "tnum" 0;
+}
+.desk ::selection {
+  background: var(--d-ink);
+  color: var(--d-bg);
+}
+
+html {
+  background: var(--paper);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+  font-feature-settings: "ss01", "cv11";
 }
+
+::selection {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+/* Faint paper grain, pure CSS so it costs nothing */
+.grain::before {
+  content: "";
+  mix-blend-mode: overlay;
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 50;
+  opacity: 0.035;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+}
+
+/* In base layer so utilities like focus-visible:outline-none can override it */
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--signal);
+    outline-offset: 3px;
+    border-radius: 4px;
+  }
+}
+
