@@ -82,6 +82,8 @@ html.lenis, html.lenis body { height: auto; }
   opacity: 0; transform: translateY(-8px); transition: opacity .4s, transform .4s; pointer-events: none;
 }
 .rl-mini sup { font-size: .45em; color: var(--accent); }
+.rl-mini { display: flex; align-items: center; gap: .3em; }
+.rl-mini img { width: 1.2em; height: 1.2em; border-radius: .3em; }
 .rl.scrolled .rl-p1, .rl.scrolled .rl-center, .rl.scrolled .rl-p2 { opacity: 0; transform: translateY(-10px); pointer-events: none; }
 .rl.scrolled .rl-mini { opacity: 1; transform: none; pointer-events: auto; }
 /* Over the long "how it works" text, give the fixed logo a backdrop so it never sits on top of a heading. */

@@ -54,6 +54,7 @@ type Plan = {
 
 async function planner(eventId: string) {
   const ev = await getEvent(eventId);
+  const fixed: Partial<Plan> = ev.plan?.fixed ?? {};
   const p = await llm<Plan>(`You are the Planner agent for a college technical club in Bengaluru, India. Today is ${TODAY()}.
 Turn this one-line brief into an event plan. Brief: """${ev.brief}"""
 First decide "kind": "free" when the event needs no money and no sponsors (a seminar, talk, workshop or meetup with no budget given,
@@ -63,7 +64,9 @@ Return JSON: {"kind": "funded"|"free", "name": string, "theme": string, "date": 
 "budget_split": [{"head": string, "amount": integer}] (funded: 4-6 heads summing to budget; free: []),
 "tiers": [{"name": "Title"|"Gold"|"Silver"|"Community", "amount": integer INR, "perks": [string]}] (funded: 3-4 tiers; free: []),
 "timeline": [{"date": "YYYY-MM-DD", "milestone": string}] (5-7 milestones from today to event day)}.
-If the brief omits a value, choose a sensible one.`);
+If the brief omits a value, choose a sensible one.${Object.keys(fixed).length ? `
+The organiser has set these values by hand — use them exactly and plan around them: ${JSON.stringify(fixed)}` : ""}`);
+  Object.assign(p, fixed); // never let the model drift from what the organiser typed
   if (!p.name || !/^\d{4}-\d{2}-\d{2}$/.test(p.date)) throw new Error("Planner returned an incomplete plan.");
   const free = p.kind === "free";
   await must(
@@ -282,6 +285,42 @@ export async function dismissSuggestion(eventId: string, company: string) {
     const ev = await getEvent(eventId);
     await must(db().from("events").update({ plan: { ...ev.plan, suggestions: (ev.plan?.suggestions ?? []).filter((x: Suggestion) => x.company !== company) } }).eq("id", eventId));
     return `Dismissed ${company}`;
+  });
+}
+
+export type EventEdit = { brief: string; name: string; date: string; venue: string; budget: number; expected_attendees: number; kind: "funded" | "free" };
+
+/** Organiser edits the event by hand. Changed values are pinned in plan.fixed so a Planner re-run keeps them. */
+export async function updateEvent(eventId: string, edit: EventEdit) {
+  return attempt(eventId, "planner", async () => {
+    const ev = await getEvent(eventId);
+    const brief = edit.brief.trim().slice(0, 500);
+    const name = edit.name.trim().slice(0, 120);
+    const venue = edit.venue.trim().slice(0, 160);
+    const kind = edit.kind === "free" ? "free" : "funded";
+    const budget = kind === "free" ? 0 : Math.round(Number(edit.budget));
+    const expected = Math.round(Number(edit.expected_attendees));
+    if (brief.length < 8) throw new Error("Describe the event in a few words.");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(edit.date)) throw new Error("Pick a date.");
+    if (!Number.isFinite(budget) || budget < 0 || budget > 10_000_000) throw new Error("Budget must be between ₹0 and ₹1 crore.");
+    if (!Number.isFinite(expected) || expected < 1 || expected > 100_000) throw new Error("Expected attendees must be at least 1.");
+
+    const next = { name: name || ev.name, date: edit.date, venue: venue || ev.venue, budget, expected_attendees: expected, kind };
+    const before = { name: ev.name, date: ev.date, venue: ev.venue, budget: ev.budget, expected_attendees: ev.expected_attendees, kind: ev.plan?.kind ?? "funded" };
+    const changed = Object.fromEntries(Object.entries(next).filter(([k, v]) => v !== before[k as keyof typeof before]));
+    if (!Object.keys(changed).length && brief === ev.brief) return "Nothing changed";
+    await must(
+      db()
+        .from("events")
+        .update({
+          brief, name: next.name, date: next.date, venue: next.venue, budget, expected_attendees: expected,
+          // Switching to free drops the money plan; switching to funded waits for a Planner run to rebuild it.
+          plan: { ...ev.plan, kind, fixed: { ...ev.plan?.fixed, ...changed }, ...(kind === "free" ? { budget_split: [], tiers: [], suggestions: [] } : {}) },
+        })
+        .eq("id", eventId),
+    );
+    const what = Object.keys(changed).map((k) => (k === "budget" ? `budget ${inr(before.budget)} → ${inr(budget)}` : k.replace("_", " "))).join(", ");
+    return `Details updated${what ? `: ${what}` : ""}`;
   });
 }
 

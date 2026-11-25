@@ -106,7 +106,7 @@ async function AgentView({ id }: { id: AgentName }) {
       </Card>
 
       {id === "sponsorship" && (
-        <Card title="Recommended sponsors" sub="Real companies the agent suggested for your upcoming events — add a contact on the event to pitch one" className="mt-3">
+        <Card title="Recommended sponsors" sub="Real companies the agent suggested for your upcoming events — add a contact on the event to pitch one" action={<Link href="/dashboard/sponsors" className="text-[12.5px] whitespace-nowrap text-d-ink2 hover:text-d-ink">Past partners →</Link>} className="mt-3">
           {recs.length ? (
             <ul className="grid gap-2 md:grid-cols-2">
               {recs.map((s) => (

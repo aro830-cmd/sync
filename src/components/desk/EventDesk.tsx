@@ -1,6 +1,7 @@
 "use client";
 
 import { AnimatePresence, motion } from "motion/react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState, useTransition, type ReactNode } from "react";
 import * as act from "@/app/actions";
@@ -11,7 +12,8 @@ import { Icon } from "./icons";
 import { Shell } from "./shell";
 import { Button, Card, Empty, Label, Stat, ToastProvider, ease, useToast } from "./ui";
 
-type Data = { event: EventRow; sponsors: Sponsor[]; volunteers: Volunteer[]; tasks: Task[]; attendees: Attendee[]; runs: Run[] };
+type Alum = { company: string; email: string; tier: string | null; event: string; times: number };
+type Data = { event: EventRow; sponsors: Sponsor[]; volunteers: Volunteer[]; tasks: Task[]; attendees: Attendee[]; runs: Run[]; alumni: Alum[] };
 type Live = Partial<Record<AgentName, "running" | "done" | "failed">>;
 type Section = "overview" | AgentName;
 type AgentState = "idle" | "running" | "done" | "failed";
@@ -235,6 +237,163 @@ function NextStep({ step, busy, onRun, onGo }: { step: Step; busy: boolean; onRu
   );
 }
 
+// ───────────── edit details ─────────────
+
+/** Change the brief, budget, date and the rest by hand, then optionally re-run the agents you pick. */
+function EditDetails({ event, running, onRun }: { event: EventRow; running: boolean; onRun: (a: AgentName[]) => void }) {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const init = {
+    brief: event.brief,
+    name: event.name ?? "",
+    date: event.date ?? "",
+    venue: event.venue ?? "",
+    budget: event.budget ?? 0,
+    expected_attendees: event.expected_attendees ?? 100,
+    kind: (event.plan?.kind ?? "funded") as "funded" | "free",
+  };
+  const [f, setF] = useState(init);
+  const [picked, setPicked] = useState<Set<AgentName>>(new Set());
+  const [pending, go] = useAction();
+  const set = <K extends keyof typeof init>(k: K, v: (typeof init)[K]) => setF((x) => ({ ...x, [k]: v }));
+  // Re-planning is what rescales the budget split and tiers, so suggest it when those inputs change.
+  const replan = f.budget !== init.budget || f.kind !== init.kind || f.date !== init.date || f.brief !== init.brief || f.expected_attendees !== init.expected_attendees;
+  const agents = agentsFor(f.kind === "free");
+  const list = agents.filter((a) => picked.has(a.id)).map((a) => a.id);
+  const field = "h-10 w-full rounded-lg border border-d-line bg-black/30 px-3 text-[13.5px] text-d-ink outline-none transition-colors focus:border-white/25";
+  const toggle = (a: AgentName) =>
+    setPicked((p) => {
+      const n = new Set(p);
+      if (n.has(a)) n.delete(a);
+      else n.add(a);
+      return n;
+    });
+
+  const show = () => {
+    setF(init);
+    setPicked(new Set());
+    setOpen(true);
+  };
+  const save = (run: boolean) =>
+    go(
+      () => act.updateEvent(event.id, f),
+      () => {
+        setOpen(false);
+        router.refresh();
+        if (run && list.length) onRun(list);
+      },
+    );
+
+  return (
+    <>
+      <Button variant="ghost" onClick={show} disabled={running}>
+        <svg viewBox="0 0 24 24" className="size-3.5" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round"><path d="M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4" /></svg>
+        Edit details
+      </Button>
+      <AnimatePresence>
+        {open && (
+          <motion.div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4 backdrop-blur-sm" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setOpen(false)}>
+            <motion.div
+              role="dialog"
+              aria-modal="true"
+              aria-label="Edit event details"
+              onClick={(e) => e.stopPropagation()}
+              onKeyDown={(e) => e.key === "Escape" && setOpen(false)}
+              initial={{ opacity: 0, y: 16, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 8, scale: 0.98 }}
+              transition={{ duration: 0.3, ease }}
+              className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-d-line bg-d-panel p-6 shadow-[0_40px_120px_-30px_rgba(0,0,0,.9)]"
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h2 className="text-[18px] font-semibold">Edit event details</h2>
+                  <p className="mt-1 text-[12.5px] text-d-ink2">What you set here sticks — a Planner re-run plans around it instead of overwriting it.</p>
+                </div>
+                <button onClick={() => setOpen(false)} aria-label="Close" className="text-d-ink3 hover:text-d-ink">✕</button>
+              </div>
+
+              <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                <label className="sm:col-span-2">
+                  <span className="mb-1.5 block text-[12px] text-d-ink2">One-line brief</span>
+                  <input value={f.brief} onChange={(e) => set("brief", e.target.value)} className={field} />
+                </label>
+                <label>
+                  <span className="mb-1.5 block text-[12px] text-d-ink2">Event name</span>
+                  <input value={f.name} onChange={(e) => set("name", e.target.value)} className={field} placeholder="Set by the Planner" />
+                </label>
+                <label>
+                  <span className="mb-1.5 block text-[12px] text-d-ink2">Date</span>
+                  <input type="date" value={f.date} onChange={(e) => set("date", e.target.value)} className={`${field} [color-scheme:dark]`} />
+                </label>
+                <label className="sm:col-span-2">
+                  <span className="mb-1.5 block text-[12px] text-d-ink2">Venue</span>
+                  <input value={f.venue} onChange={(e) => set("venue", e.target.value)} className={field} placeholder="Set by the Planner" />
+                </label>
+                <div>
+                  <span className="mb-1.5 block text-[12px] text-d-ink2">Type</span>
+                  <div className="grid h-10 grid-cols-2 rounded-lg border border-d-line bg-black/30 p-1">
+                    {(["funded", "free"] as const).map((k) => (
+                      <button key={k} type="button" onClick={() => set("kind", k)} className={`relative rounded-md text-[13px] capitalize transition-colors ${f.kind === k ? "text-d-ink" : "text-d-ink3 hover:text-d-ink2"}`}>
+                        {f.kind === k && <motion.span layoutId="kind-pill" className={`absolute inset-0 rounded-md ${k === "free" ? "bg-s3/20" : "bg-s1/20"}`} transition={{ duration: 0.25, ease }} />}
+                        <span className="relative">{k}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <label>
+                  <span className="mb-1.5 block text-[12px] text-d-ink2">Budget (₹)</span>
+                  <input type="number" min={0} step={1000} disabled={f.kind === "free"} value={f.kind === "free" ? 0 : f.budget} onChange={(e) => set("budget", Number(e.target.value))} className={`${field} disabled:opacity-40`} />
+                </label>
+                <label>
+                  <span className="mb-1.5 block text-[12px] text-d-ink2">Expected attendees</span>
+                  <input type="number" min={1} value={f.expected_attendees} onChange={(e) => set("expected_attendees", Number(e.target.value))} className={field} />
+                </label>
+              </div>
+
+              <div className="mt-6 rounded-xl border border-d-line bg-black/20 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-[13px] font-medium">Re-run agents after saving</span>
+                  {replan && !picked.has("planner") && (
+                    <button type="button" onClick={() => toggle("planner")} className="text-[12px] text-s1 hover:brightness-125">
+                      Budget or plan changed — add Planner
+                    </button>
+                  )}
+                </div>
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {agents.map((a) => {
+                    const on = picked.has(a.id);
+                    return (
+                      <button
+                        key={a.id}
+                        type="button"
+                        aria-pressed={on}
+                        onClick={() => toggle(a.id)}
+                        className={`flex h-8 items-center gap-2 rounded-full border px-3 text-[12.5px] transition-colors ${on ? "border-s1/50 bg-s1/15 text-d-ink" : "border-d-line text-d-ink3 hover:text-d-ink2"}`}
+                      >
+                        <span className="[&>svg]:size-3.5">{Icon[a.id]}</span>
+                        {a.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="mt-6 flex flex-wrap justify-end gap-2">
+                <Button variant="ghost" onClick={() => setOpen(false)}>Cancel</Button>
+                <Button variant="ghost" pending={pending} onClick={() => save(false)}>Save only</Button>
+                <Button variant="accent" pending={pending} disabled={!list.length} onClick={() => save(true)}>
+                  Save & run {list.length || ""} agent{list.length === 1 ? "" : "s"} →
+                </Button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </>
+  );
+}
+
 // ───────────── overview ─────────────
 
 function Overview({ d, state, running, onRun, onGo }: { d: Data; state: (a: AgentName) => AgentState; running: boolean; onRun: (a: AgentName[]) => void; onGo: (s: Section) => void }) {
@@ -256,6 +415,7 @@ function Overview({ d, state, running, onRun, onGo }: { d: Data; state: (a: Agen
         sub={[event.theme, event.venue, event.expected_attendees ? `${event.expected_attendees} expected` : null].filter(Boolean).join(" · ")}
         actions={
           <>
+            <EditDetails event={event} running={running} onRun={onRun} />
             <Button variant="ghost" onClick={() => navigator.clipboard.writeText(location.origin + regUrl).then(() => notify(true, "Registration link copied"))}>
               Copy registration link
             </Button>
@@ -477,7 +637,7 @@ const NEXT: Partial<Record<Sponsor["status"], Sponsor["status"][]>> = {
   declined: ["replied"],
 };
 
-function Sponsors({ event, sponsors }: Data) {
+function Sponsors({ event, sponsors, alumni }: Data) {
   const [pending, go] = useAction();
   const [open, setOpen] = useState<string | null>(null);
   const n = (...s: Sponsor["status"][]) => sponsors.filter((x) => s.includes(x.status)).length;
@@ -586,11 +746,34 @@ function Sponsors({ event, sponsors }: Data) {
       </Card>
 
       <Suggestions event={event} />
+      <PastPartners eventId={event.id} alumni={alumni.filter((a) => !sponsors.some((s) => s.company === a.company))} />
 
       <Card title="Add sponsor leads" sub="One company per line — the agent drafts a pitch for each new lead">
         <AddLines label="Company, email" placeholder="Atlassian, university@atlassian.com" onAdd={(t) => act.addLeads(event.id, t)} />
       </Card>
     </div>
+  );
+}
+
+/** Companies that confirmed for earlier events — one click invites them back as a lead (their email is on file). */
+function PastPartners({ eventId, alumni }: { eventId: string; alumni: Alum[] }) {
+  const [pending, go] = useAction();
+  if (!alumni.length) return null;
+  return (
+    <Card title="Partnered before" sub="Sponsors from your past events who aren't on this one yet" action={<Link href="/dashboard/sponsors" className="text-[12.5px] text-d-ink2 hover:text-d-ink">Sponsor directory →</Link>}>
+      <ul className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+        {alumni.map((a) => (
+          <li key={a.company} className="flex items-center gap-3 rounded-xl border border-d-line bg-black/20 p-3">
+            <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-white/[0.06] text-[12px] font-semibold">{a.company.split(" ").map((w) => w[0]).slice(0, 2).join("")}</span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-[13.5px] font-medium">{a.company}</span>
+              <span className="block truncate text-[11.5px] text-d-ink3">{a.times > 1 ? `${a.times} events · ` : ""}last: {a.tier} at {a.event}</span>
+            </span>
+            <button disabled={pending} onClick={() => go(() => act.addLeads(eventId, `${a.company}, ${a.email}`))} className="shrink-0 rounded-md border border-d-line px-2.5 py-1 text-[12px] transition-colors hover:border-s1/50 hover:bg-s1/10 disabled:opacity-40">+ Lead</button>
+          </li>
+        ))}
+      </ul>
+    </Card>
   );
 }
 

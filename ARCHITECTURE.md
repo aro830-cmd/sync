@@ -38,6 +38,8 @@ EventDesk (client) calls runAgent(event, name) for each agent IN ORDER, UI updat
 Every run is logged to `agent_runs` → activity feed + pipeline card status. Planner failure stops the chain.
 The composer picks which agents run (`?run=planner,comms`); any agent can also run alone from its page.
 **Free events:** the Planner sets `plan.kind = "free"` (seminars, talks, no budget) → budget 0, no tiers, Sponsorship skipped, report addressed to the club.
+**Edit details:** organiser edits (brief, name, date, venue, budget, seats, funded/free) are pinned in `plan.fixed`; a Planner re-run plans around them. The edit dialog can re-run any chosen agents.
+**Voice:** the composer's mic uses the browser Web Speech API (en-IN) — hidden where unsupported.
 **Recommended sponsors:** Sponsorship asks Gemini for 8 real companies → `plan.suggestions` (no emails); the organiser adds a contact to turn one into a lead.
 Agents with no input (no leads / no volunteers) skip with a message instead of failing.
 
@@ -50,7 +52,9 @@ Agents with no input (no leads / no volunteers) skip with a message instead of f
 | `src/app/actions.ts` | **All** Server Actions: 5 agents, `runAgent`, organiser actions (send pitches, set status, email shifts, reminders, certificates, report), public `register` |
 | `src/lib/server.ts` | `db()`, `llm()`, `sendMail()`, `requireAdmin()` |
 | `src/lib/schedule.ts` (+ `.test.ts`) | Deterministic volunteer assignment, no overlaps |
-| `src/lib/pdf.ts`, `src/lib/report.ts` | Certificate + report PDFs |
+| `src/lib/pdf.ts`, `src/lib/report.ts` | Certificate + multi-page report PDF (cover with mascot, KPIs, summary, registrations chart, budget, sponsor funnel + partners, tiers, timeline, run-of-show) |
+| `src/app/dashboard/sponsors/page.tsx`, `src/lib/partners.ts` | Sponsor directory; fictional company profiles (contact, notes) |
+| `src/components/FoxMark.tsx`, `src/app/icon.png` | Fox mascot app icon (favicon + every Relay wordmark) |
 | `src/lib/agents.ts`, `src/lib/types.ts` | Agent list, row types |
 | `src/app/dashboard/page.tsx` | Organiser home: composer + agent picker, lifetime KPIs, "Needs you" inbox, health rings, upcoming cards, reach trend, activity heatmap |
 | `src/app/dashboard/past/page.tsx`, `src/app/dashboard/agents/[agent]/page.tsx` | Past events archive; per-agent pages (about, run alone via `RunPanel`, history) |

@@ -1,4 +1,4 @@
-// Demo history on top of seed.sql: four past events and two upcoming ones, with fictional sponsors (all @example.com).
+// Demo history on top of seed.sql: six past events and two upcoming ones, with fictional sponsors (all @example.com).
 // Safe to re-run — deletes these fixed ids (cascades) and inserts them fresh.
 // Run: node --env-file=.env.local supabase/seed-history.mjs
 import { createClient } from "@supabase/supabase-js";
@@ -29,6 +29,12 @@ const tiers = (title, gold, silver) => [
 
 // [n, name, theme, date, budget|0 (free), expected, venue, registered, checked, sponsors[[company, tier, fit, status]], summary]
 const EVENTS = [
+  [8, "HackRIT '25", "24-hour hackathon on tools for the city", "2025-12-13", 45000, 180, "Apex Block Seminar Hall", 154, 121,
+    [["Northwind Cloud", "Title", 91, "confirmed"], ["Kestrel Labs", "Gold", 83, "confirmed"], ["Bluebird Bank", "Silver", 66, "confirmed"], ["Quill Analytics", "Silver", 49, "declined"]],
+    "HackRIT '25 hosted 121 builders of 154 registered on 13 December. Northwind Cloud (Title), Kestrel Labs (Gold) and Bluebird Bank (Silver) made it possible; every promised perk was delivered, from the keynote to banner placement. 29 teams demoed civic tools."],
+  [9, "Design Sprint: Campus Apps", "A one-day product design sprint", "2026-03-14", 15000, 70, "ISE Seminar Room", 66, 58,
+    [["Copperleaf Studio", "Gold", 88, "confirmed"], ["Orbit Pay", "Silver", 70, "confirmed"], ["Ferrum Systems", "Silver", 61, "declined"]],
+    "Design Sprint: Campus Apps brought 58 students of 66 registered into the ISE Seminar Room on 14 March. Copperleaf Studio (Gold) ran portfolio reviews and Orbit Pay (Silver) judged the payments challenge. Twelve teams shipped clickable prototypes."],
   [2, "CloudCraft Workshop", "Hands-on deploys on serverless and containers", "2026-08-22", 20000, 90, "ISE Lab 3, Main Block", 76, 64,
     [["Northwind Cloud", "Gold", 90, "confirmed"], ["Ferrum Systems", "Silver", 72, "confirmed"], ["Tidepool Data", "Silver", 58, "declined"]],
     "CloudCraft Workshop brought 64 students into ISE Lab 3 on 22 August, out of 76 who registered. Northwind Cloud (Gold) ran the deploy lab and Ferrum Systems (Silver) sponsored credits; both logos appeared on every banner. Every attendee shipped a container to production by lunch."],
@@ -51,7 +57,8 @@ await must(db.from("events").delete().in("id", EVENTS.map((e) => id(e[0]))));
 for (const [n, name, theme, date, budget, expected, venue, reg, checked, sponsors, summary] of EVENTS) {
   const free = !budget;
   const past = !!summary;
-  const t = tiers(Math.round(budget * 0.45), Math.round(budget * 0.25), Math.round(budget * 0.12));
+  const r500 = (x) => Math.round(x / 500) * 500;
+  const t = tiers(r500(budget * 0.45), r500(budget * 0.25), r500(budget * 0.12));
   const start = day(date);
   await must(db.from("events").insert({
     id: id(n),
@@ -104,6 +111,16 @@ for (const [n, name, theme, date, budget, expected, venue, reg, checked, sponsor
       created_at: iso(new Date(open + (end - open) * f)),
     };
   })));
+
+  if (past) {
+    const team = [["Aditi Rao", "registration, design"], ["Rahul Menon", "av"], ["Sneha Iyer", "logistics"], ["Karthik S", "av, tech"], ["Meera Nair", "social, design"]];
+    const vols = await must(db.from("volunteers").insert(team.map(([nm, skills]) => ({ event_id: id(n), name: nm, skills, email: `${nm.split(" ")[0].toLowerCase()}@example.com` }))).select("id"));
+    const at = (h, m = 0) => `${date}T${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:00+05:30`;
+    const plan = [["Venue setup & signage", null, 7, 30, 9, 0, 2], ["Registration desk", "registration", 8, 0, 10, 0, 0], ["AV & projector check", "av", 8, 0, 9, 30, 1],
+      ["Social media coverage", "social", 9, 0, 12, 0, 4], ["Opening session stage", "av", 9, 30, 10, 30, 3], ["Lunch distribution", null, 12, 30, 14, 0, 0],
+      ["Speaker & mentor desk", null, 10, 0, 13, 0, 2], ["Closing & cleanup", null, 17, 0, 18, 30, 2]];
+    await must(db.from("tasks").insert(plan.map(([title, skill, h1, m1, h2, m2, v]) => ({ event_id: id(n), title, skill, starts_at: at(h1, m1), ends_at: at(h2, m2), volunteer_id: vols[v].id }))));
+  }
 
   const ran = past ? AGENT_ORDER : ["planner", "sponsorship", "comms"];
   await must(db.from("agent_runs").insert(ran.filter((a) => !(free && a === "sponsorship")).map((agent, i) => ({

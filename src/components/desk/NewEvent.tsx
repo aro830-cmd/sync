@@ -2,7 +2,7 @@
 
 import { AnimatePresence, motion } from "motion/react";
 import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
+import { useRef, useState, useSyncExternalStore, useTransition } from "react";
 import { createEvent } from "@/app/actions";
 import { AGENTS, type AgentName } from "@/lib/agents";
 import { Icon } from "./icons";
@@ -13,6 +13,11 @@ const field =
 
 const EXAMPLES = ["Hackathon on AI for campus, 15 Dec, ₹50k, 200 people", "Free seminar on AI safety, 18 Dec, 120 students", "Tech talk on cloud careers, 10 Jan, ₹15k, 80 people"];
 // A brief that reads like a free event: the Planner will most likely mark it free, so Sponsorship starts off.
+// Web Speech API (Chrome, Edge, Safari). Typed loosely: it isn't in the TS DOM lib.
+type Recognizer = { lang: string; interimResults: boolean; continuous: boolean; start(): void; stop(): void; onresult: ((e: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null; onend: (() => void) | null; onerror: ((e: { error: string }) => void) | null };
+const speechCtor = () => (typeof window === "undefined" ? null : ((window as unknown as Record<string, new () => Recognizer>).SpeechRecognition ?? (window as unknown as Record<string, new () => Recognizer>).webkitSpeechRecognition ?? null));
+const noop = () => () => {};
+
 const looksFree = (b: string) => /\b(free|seminar|talk|meetup|no budget)\b|₹\s*0\b/i.test(b) && !/₹\s*[1-9]/.test(b);
 
 export function NewEvent({ initial = "" }: { initial?: string }) {
@@ -24,7 +29,32 @@ export function NewEvent({ initial = "" }: { initial?: string }) {
   const [picked, setPicked] = useState<Set<AgentName>>(() => new Set(AGENTS.map((a) => a.id)));
   const [error, setError] = useState("");
   const [pending, start] = useTransition();
+  const [listening, setListening] = useState(false);
+  const rec = useRef<Recognizer | null>(null);
+  const canSpeak = useSyncExternalStore(noop, () => !!speechCtor(), () => false);
   const free = looksFree(brief);
+
+  // Speak the brief instead of typing it. Appends to what's already there; stops on silence or a second tap.
+  const listen = () => {
+    if (listening) return rec.current?.stop();
+    const SR = speechCtor();
+    if (!SR) return;
+    const r = new SR();
+    r.lang = "en-IN";
+    r.interimResults = true;
+    r.continuous = false;
+    const base = brief.trim() ? brief.trim() + " " : "";
+    r.onresult = (e) => setBrief(base + Array.from(e.results, (x) => x[0].transcript).join(""));
+    r.onend = () => setListening(false);
+    r.onerror = (e) => {
+      setListening(false);
+      if (e.error !== "aborted") setError(e.error === "not-allowed" ? "Microphone access is blocked — allow it from the address bar, then tap the mic again." : "Didn't catch that — tap the mic and try again.");
+    };
+    setError("");
+    rec.current = r;
+    r.start();
+    setListening(true);
+  };
   const run = AGENTS.filter((a) => picked.has(a.id) && !(free && a.fundedOnly)).map((a) => a.id);
 
   const toggle = (a: AgentName) =>
@@ -58,10 +88,28 @@ export function NewEvent({ initial = "" }: { initial?: string }) {
           id="brief"
           value={brief}
           onChange={(e) => setBrief(e.target.value)}
-          placeholder="Describe the event in one line — what, when, budget, how many people"
+          placeholder={listening ? "Listening… say what, when, the budget and how many people" : "Describe the event in one line — or tap the mic and say it"}
           className="min-w-0 flex-1 bg-transparent px-3 py-3 text-[17px] text-d-ink outline-none placeholder:text-d-ink3 focus-visible:outline-none"
           autoFocus
         />
+        {canSpeak && (
+          <button
+            type="button"
+            onClick={listen}
+            aria-label={listening ? "Stop listening" : "Speak the brief"}
+            aria-pressed={listening}
+            className={`relative grid size-11 shrink-0 place-items-center self-end rounded-xl border transition-colors md:self-auto ${listening ? "border-s1 bg-s1 text-white" : "border-d-line bg-white/[0.03] text-d-ink2 hover:border-white/25 hover:text-d-ink"}`}
+          >
+            {listening && [0, 1].map((k) => <span key={k} aria-hidden className="absolute inset-0 rounded-xl border-2 border-s1 [animation:desk-ripple_1.6s_ease-out_infinite]" style={{ animationDelay: `${k * 0.8}s` }} />)}
+            {listening ? (
+              <span aria-hidden className="flex h-4 items-center gap-[3px]">
+                {[0, 1, 2, 3].map((k) => <span key={k} className="w-[3px] rounded-full bg-white [animation:desk-eq_0.9s_ease-in-out_infinite]" style={{ animationDelay: `${k * 0.15}s` }} />)}
+              </span>
+            ) : (
+              <svg viewBox="0 0 24 24" className="size-[18px]" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="3.5" width="6" height="11" rx="3" /><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v2.5" /></svg>
+            )}
+          </button>
+        )}
         <Button variant="accent" pending={pending} disabled={brief.trim().length < 8} className="h-11 px-5 text-[14px]">
           {pending ? "Creating…" : `Run ${run.length === AGENTS.length ? "all 5" : run.length} agent${run.length === 1 ? "" : "s"} →`}
         </Button>

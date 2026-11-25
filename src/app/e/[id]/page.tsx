@@ -1,3 +1,4 @@
+import { FoxMark } from "@/components/FoxMark";
 import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import { db } from "@/lib/server";
@@ -43,7 +44,7 @@ export default function Page({ params }: PageProps<"/e/[id]">) {
   return (
     <main className="grain min-h-screen px-6 py-16 md:py-28">
       <div className="mx-auto max-w-5xl">
-        <Link href="/" className="font-[family-name:var(--font-archivo)] text-2xl font-semibold tracking-[-0.02em]">Relay<sup className="text-[.45em] text-signal">®</sup></Link>
+        <Link href="/" className="inline-flex items-center gap-2.5 font-[family-name:var(--font-archivo)] text-2xl font-semibold tracking-[-0.02em]"><FoxMark className="size-9 rounded-[11px]" />Relay<sup className="text-[.45em] text-signal">®</sup></Link>
         <div className="mt-16 md:mt-24">
           <Suspense fallback={<div className="h-80 animate-pulse rounded-2xl bg-paper-2/50" />}>
             <Registration params={params} />

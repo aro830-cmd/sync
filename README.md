@@ -25,7 +25,7 @@ Next.js 16 + TypeScript · Tailwind v4 + motion · Gemini · Supabase Postgres �
    | `ADMIN_PASSCODE` | Any password; guards `/dashboard` |
    | `SESSION_SECRET` | Any long random string; signs student login cookies |
 
-3. New Supabase project only: run `supabase/schema.sql` in the SQL editor, then optionally `supabase/seed.sql` for the demo event (open `/dashboard/de000000-0000-4000-a000-000000000001`). For demo history (4 past + 2 upcoming events, fictional sponsors): `node --env-file=.env.local supabase/seed-history.mjs` (re-runnable).
+3. New Supabase project only: run `supabase/schema.sql` in the SQL editor, then optionally `supabase/seed.sql` for the demo event (open `/dashboard/de000000-0000-4000-a000-000000000001`). For demo history (6 past + 2 upcoming events, fictional sponsors, volunteer shifts): `node --env-file=.env.local supabase/seed-history.mjs` (re-runnable).
 4. `npm run dev` → http://localhost:3000
 
 ## Routes
@@ -33,6 +33,7 @@ Next.js 16 + TypeScript · Tailwind v4 + motion · Gemini · Supabase Postgres �
 - `/` — landing
 - `/admin/login` → `/dashboard` — organiser home: brief composer with agent picker, lifetime stats, "Needs you" inbox, upcoming events, charts
 - `/dashboard/past` — past events, registered vs attended, loyal partners, "Run it again"
+- `/dashboard/sponsors` — sponsor directory: every company pitched or partnered, contacts, notes, history per event
 - `/dashboard/agents/[agent]` — one page per agent: what it does, run it alone on any event, its history
 - `/dashboard/[id]` — event desk (`?s=<agent>` opens an agent page)
 - `/e/[id]` — public event registration

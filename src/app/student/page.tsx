@@ -1,3 +1,4 @@
+import { FoxMark } from "@/components/FoxMark";
 import { Suspense } from "react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -185,7 +186,7 @@ export default function Page() {
   return (
     <main className="grain min-h-screen px-6 py-16 md:py-24">
       <div className="mx-auto max-w-4xl">
-        <Link href="/" className="font-[family-name:var(--font-archivo)] text-2xl font-semibold tracking-[-0.02em]">Relay<sup className="text-[.45em] text-signal">®</sup></Link>
+        <Link href="/" className="inline-flex items-center gap-2.5 font-[family-name:var(--font-archivo)] text-2xl font-semibold tracking-[-0.02em]"><FoxMark className="size-9 rounded-[11px]" />Relay<sup className="text-[.45em] text-signal">®</sup></Link>
         <div className="mt-14">
           <Suspense fallback={<div className="h-80 animate-pulse rounded-2xl bg-paper-2/50" />}>
             <Portal />

@@ -1,5 +1,6 @@
 "use client";
 
+import { FoxMark } from "@/components/FoxMark";
 import Link from "next/link";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { FoxCanvas } from "@/components/FoxCanvas";
@@ -234,7 +235,7 @@ export function RelayLanding() {
         <button className="rl-menu-btn" aria-label={open ? "Close menu" : "Open menu"} aria-expanded={open} onClick={() => setOpen((o) => !o)}>
           <i /><i /><i />
         </button>
-        <a href="#top" className="rl-mini" onClick={(e) => (e.preventDefault(), go(0))}>Relay<sup>®</sup></a>
+        <a href="#top" className="rl-mini" onClick={(e) => (e.preventDefault(), go(0))}><FoxMark />Relay<sup>®</sup></a>
         <nav className="rl-menu" aria-hidden={!open} onClick={(e) => (e.target as HTMLElement).closest("a") && setOpen(false)}>
           <a href="#top"><span>01</span>The Brief</a>
           <a href="#walk"><span>02</span>The Agents</a>
