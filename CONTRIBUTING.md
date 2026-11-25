@@ -31,14 +31,15 @@ npm install
 
 ## 4. Environment variables
 
-```bash
-cp .env.example .env.local     # Windows PowerShell: Copy-Item .env.example .env.local
-```
+**Nothing to do — the repo already contains `.env.local` with the team's shared keys** (committed on purpose; the repo is private). Cloning gives you a working setup.
 
-Fill in `.env.local`. Two options:
+These are live keys for the shared database, Gmail account and Gemini quota, so:
 
-- **Shared team setup (fastest):** ask the owner for the values over a private channel (DM, password manager). Never paste keys in issues, PRs, commits or group chats.
-- **Your own setup:** create your own free accounts —
+- never copy them into issues, PRs, chats, screenshots or another repo;
+- don't commit changes to `.env.local` unless the owner asks — if you need different values locally, tell Git to ignore your edits: `git update-index --skip-worktree .env.local`;
+- if the repo is ever made public or someone leaves, the owner must rotate every key.
+
+Prefer your own keys instead? Create free accounts and put the values in `.env.local` (skip-worktree as above) —
   - Gemini key: https://aistudio.google.com/apikey
   - Supabase project: create one, then run `supabase/schema.sql` and (optional) `supabase/seed.sql` in its SQL editor
   - Gmail app password for a test Gmail account
@@ -90,7 +91,7 @@ The fox animation and the cast images load from external CDNs, so they need an i
 
 ## 8. Rules
 
-- **Never commit secrets.** `.env*` is git-ignored except `.env.example`, which must stay value-free.
+- **Never commit new secrets.** `.env.local` is shared on purpose; every other `.env*` file is git-ignored, and `.env.example` must stay value-free.
 - Keep `PROGRESS.md` current when you finish a piece of work.
 - Database changes: add them to `supabase/schema.sql` so others can reproduce them, and tell the team if the shared project needs a migration.
 - Emails go to real inboxes — use `@example.com` addresses for test data.
