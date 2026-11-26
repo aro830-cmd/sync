@@ -347,34 +347,6 @@ export async function generateMissingReports() {
   return { ok: true, message: past.length ? `Wrote ${ok} of ${past.length} missing reports — PDFs are ready` : "Every past event already has a report" };
 }
 
-/** The event's pitch: The Why?, Appeal, Trigger, Disruption — for presenting it. Stored in plan.pitch. */
-export async function generatePitch(eventId: string) {
-  return attempt(eventId, "comms", async () => {
-    const ev = await getEvent(eventId);
-    if (!ev.name) throw new Error("Run the Planner first — the pitch is built from the plan.");
-    const free = ev.plan?.kind === "free";
-    const partners = (await must(db().from("sponsors").select("company").eq("event_id", eventId).eq("status", "confirmed"))).map((s) => s.company);
-    const { v, off } = await smart<{ why: string; appeal: string[]; trigger: string; disruption: string[] }>(
-      `You are pitching the college event "${ev.name}" (${ev.theme}) on ${ev.date} at ${ev.venue}, ~${ev.expected_attendees} students, ${free ? "free entry" : `budget ₹${ev.budget}`}${partners.length ? `, partners: ${partners.join(", ")}` : ""}.
-Write a short pitch in four parts, concrete to this event, no hype words:
-"why": 2-3 sentences — the problem or need this event answers for students;
-"appeal": 4 bullet strings — what makes students want to come (prizes, people, skills, perks);
-"trigger": 2 sentences — the moment/deadline that makes them register now, including the date;
-"disruption": 3 bullet strings — what is new or different compared with usual college events.
-Return JSON: {"why": string, "appeal": [string], "trigger": string, "disruption": [string]}`,
-      () => ({
-        why: `Students want hands-on experience with ${ev.theme?.toLowerCase() ?? "new technology"}, but classes rarely give them a day to build, meet people and ship. ${ev.name} gives them exactly that.`,
-        appeal: [free ? "Free entry, open to all branches" : "Food, prizes and swag for every participant", `${ev.expected_attendees} students in one room at ${ev.venue}`, "Mentors and a certificate for everyone who attends", partners.length ? `Backed by ${partners.join(", ")}` : "Real problems, real feedback from organisers"],
-        trigger: `It happens on ${new Date(ev.date).toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long" })} and seats are limited to ${ev.expected_attendees}. Registration closes when they're gone — sign up today.`,
-        disruption: ["Run end to end by AI agents with organisers approving every step", "Every attendee gets a verified certificate automatically", "Sponsors get a real post-event report, not a thank-you email"],
-      }),
-    );
-    const pitch = { why: v.why, appeal: (v.appeal ?? []).slice(0, 6), trigger: v.trigger, disruption: (v.disruption ?? []).slice(0, 5), generated_at: new Date().toISOString(), offline: off };
-    await must(db().from("events").update({ plan: { ...ev.plan, pitch } }).eq("id", eventId));
-    return `Pitch written for ${ev.name}${off ? " (offline mode)" : ""}`;
-  });
-}
-
 export async function createEvent(brief: string, leads: string, volunteers: string) {
   await requireAdmin();
   if (brief.trim().length < 8) throw new Error("Describe the event in a few words.");
