@@ -19,7 +19,7 @@ import { Button, Card, Empty, Label, Stat, ToastProvider, ease, useToast } from 
 type Alum = { company: string; email: string; tier: string | null; event: string; times: number };
 type Data = { event: EventRow; sponsors: Sponsor[]; volunteers: Volunteer[]; tasks: Task[]; attendees: Attendee[]; runs: Run[]; alumni: Alum[]; demoInbox: string | null; invitable: number; studentInbox: string | null; crm: Crm; today: string };
 type Live = Partial<Record<AgentName, "running" | "done" | "failed">>;
-type Section = "overview" | AgentName;
+type Section = "overview" | "pitch" | AgentName;
 type AgentState = "idle" | "running" | "done" | "failed";
 
 const ago = (iso: string) => {
@@ -46,7 +46,7 @@ function Desk(d: Data) {
   // ?s=<agent> deep-links straight to an agent page (from the home inbox and the agent pages).
   const [section, setSection] = useState<Section>(() => {
     const s = params.get("s");
-    return agents.some((a) => a.id === s) ? (s as AgentName) : "overview";
+    return s === "pitch" ? "pitch" : agents.some((a) => a.id === s) ? (s as AgentName) : "overview";
   });
   const [live, setLive] = useState<Live>({});
   const [running, setRunning] = useState(false);
@@ -107,7 +107,7 @@ function Desk(d: Data) {
       head={head}
       groups={[
         { items: [{ key: "back", label: "All events", icon: Icon.events, href: "/dashboard" }, { key: "past", label: "Past events", icon: Icon.past, href: "/dashboard/past" }] },
-        { items: [{ key: "overview", label: "Overview", icon: Icon.overview, active: section === "overview", onClick: () => go("overview") }] },
+        { items: [{ key: "overview", label: "Overview", icon: Icon.overview, active: section === "overview", onClick: () => go("overview") }, { key: "pitch", label: "Pitch", icon: Icon.spark, active: section === "pitch", onClick: () => go("pitch") }] },
         {
           label: "Agents",
           items: agents.map((a) => ({ key: a.id, label: a.name, icon: Icon[a.id], active: section === a.id, onClick: () => go(a.id), dot: DOT[state(a.id)] })),
@@ -116,7 +116,9 @@ function Desk(d: Data) {
     >
       <AnimatePresence mode="wait">
         <motion.div key={section} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: 0.28, ease }}>
-          {section === "overview" ? (
+          {section === "pitch" ? (
+            <EventPitch event={event} />
+          ) : section === "overview" ? (
             <Overview d={d} state={state} running={running} onRun={run} onGo={go} />
           ) : (
             <AgentPage d={d} agent={section} state={state(section)} running={running} onRun={() => run([section])} onGo={go} />
@@ -239,6 +241,46 @@ function NextStep({ step, busy, onRun, onGo }: { step: Step; busy: boolean; onRu
         </Button>
       </div>
     </motion.div>
+  );
+}
+
+// ───────────── pitch ─────────────
+
+/** The Why?, Appeal, Trigger, Disruption — this event's pitch, for presenting it. */
+function EventPitch({ event }: { event: EventRow }) {
+  const [pending, go] = useAction();
+  const p = event.plan?.pitch;
+  const blocks: [string, string, ReactNode][] = p
+    ? [
+        ["01", "The Why?", <p key="w" className="text-[15px] leading-relaxed text-d-ink2">{p.why}</p>],
+        ["02", "Appeal", <ul key="a" className="space-y-2">{p.appeal.map((x) => <li key={x} className="flex gap-2 text-[14.5px] text-d-ink2"><span className="text-s1">✦</span>{x}</li>)}</ul>],
+        ["03", "Trigger", <p key="t" className="text-[15px] leading-relaxed text-d-ink2">{p.trigger}</p>],
+        ["04", "Disruption", <ul key="d" className="space-y-2">{p.disruption.map((x) => <li key={x} className="flex gap-2 text-[14.5px] text-d-ink2"><span className="text-s1">→</span>{x}</li>)}</ul>],
+      ]
+    : [];
+  return (
+    <>
+      <PageHead
+        eyebrow={<>Pitch{p ? ` · written ${new Date(p.generated_at).toLocaleDateString("en-IN")}${p.offline ? " · offline mode" : ""}` : ""}</>}
+        title={event.name ? `Why ${event.name}?` : "Pitch"}
+        sub="The Why?, Appeal, Trigger and Disruption for this event — use it on stage, in the announcement or with sponsors."
+        actions={<Button variant="accent" pending={pending} onClick={() => go(() => act.generatePitch(event.id))}>{p ? "Rewrite pitch" : "Write pitch"}</Button>}
+      />
+      {p ? (
+        <div className="grid gap-3 md:grid-cols-2">
+          {blocks.map(([n, h, body], i) => (
+            <motion.section key={h} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4, ease, delay: i * 0.08 }} className="relative overflow-hidden rounded-2xl border border-s1/25 bg-d-panel p-6">
+              <span aria-hidden className="pointer-events-none absolute -top-6 -right-2 text-[88px] leading-none font-black text-s1/10">{n}</span>
+              <div className="text-[11px] font-medium tracking-[0.12em] text-s1 uppercase">{n} / {h}</div>
+              <h2 className="mt-2 mb-4 text-[22px] font-semibold tracking-[-0.02em]">{h}</h2>
+              {body}
+            </motion.section>
+          ))}
+        </div>
+      ) : (
+        <Empty>Press “Write pitch” — it&apos;s built from this event&apos;s plan, partners and numbers.</Empty>
+      )}
+    </>
   );
 }
 
@@ -385,6 +427,7 @@ function EditDetails({ event, running, onRun }: { event: EventRow; running: bool
               </div>
 
               <div className="mt-6 flex flex-wrap justify-end gap-2">
+                <span className="mr-auto"><ConfirmButton variant="ghost" confirm="Delete this event and everything in it?" onConfirm={() => act.deleteEvent(event.id)}>Delete event</ConfirmButton></span>
                 <Button variant="ghost" onClick={() => setOpen(false)}>Cancel</Button>
                 <Button variant="ghost" pending={pending} onClick={() => save(false)}>Save only</Button>
                 <Button variant="accent" pending={pending} disabled={!list.length} onClick={() => save(true)}>

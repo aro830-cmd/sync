@@ -369,21 +369,6 @@ export function RelayLanding() {
           ))}
         </div>
 
-        <div className="rl-pitch">
-          {[
-            ["THE WHY?", "Clubs run on chaos", "WhatsApp threads, spreadsheets, cold emails nobody follows up, double-booked volunteers, certificates sent weeks late. Relay lets a club go from a one-line idea to a fully run event — without a full-time ops team."],
-            ["APPEAL", "One line in, a whole event out", "Type or speak the brief. Five agents plan it, find sponsors, staff volunteers, open registration and write the report — real emails, PDFs and a poster, with a human approving every send."],
-            ["TRIGGER", "The moment a club says “let’s host”", "Brief → plan → sponsor drafts → fair volunteer roles → poster and invites → check-in, certificates and a partner report. The pipeline starts the second the idea does."],
-            ["DISRUPTION", "Five tools become one desk", "Explainable AI instead of a black box: sponsor scores show every factor, volunteer picks say why, every claim needs a source. Fair by design, and the club's memory carries to the next committee."],
-          ].map(([k, h, p]) => (
-            <div key={k} className="rl-mode rl-reveal">
-              <div className="rl-plabel">{k}</div>
-              <h3>{h}</h3>
-              <p>{p}</p>
-            </div>
-          ))}
-        </div>
-
         <div className="rl-modes">
           <div className="rl-mode rl-reveal">
             <div className="rl-plabel">FUNDED</div>

@@ -3,7 +3,7 @@
 import { AnimatePresence, motion } from "motion/react";
 import { useRouter } from "next/navigation";
 import { useRef, useState, useSyncExternalStore, useTransition } from "react";
-import { createEvent } from "@/app/actions";
+import { createEvent, findDuplicate } from "@/app/actions";
 import { AGENTS, type AgentName } from "@/lib/agents";
 import { DEMO_LEADS, DEMO_VOLUNTEERS } from "@/lib/demo";
 import { Icon } from "./icons";
@@ -29,6 +29,7 @@ export function NewEvent({ initial = "" }: { initial?: string }) {
   const [more, setMore] = useState(false);
   const [picked, setPicked] = useState<Set<AgentName>>(() => new Set(AGENTS.map((a) => a.id)));
   const [error, setError] = useState("");
+  const [dupe, setDupe] = useState<{ id: string; name: string | null; date: string | null } | null>(null);
   const [pending, start] = useTransition();
   const [listening, setListening] = useState(false);
   const rec = useRef<Recognizer | null>(null);
@@ -67,11 +68,16 @@ export function NewEvent({ initial = "" }: { initial?: string }) {
       return n;
     });
 
-  const submit = (e: React.FormEvent) => {
+  const submit = (e: React.FormEvent, force = false) => {
     e.preventDefault();
     setError("");
     start(async () => {
       try {
+        if (!force) {
+          const d = await findDuplicate(brief);
+          if (d) return setDupe(d);
+        }
+        setDupe(null);
         const id = await createEvent(brief, leads, vols);
         router.push(`/dashboard/${id}?run=${run.join(",")}`);
       } catch (err) {
@@ -182,6 +188,13 @@ export function NewEvent({ initial = "" }: { initial?: string }) {
         )}
       </AnimatePresence>
 
+      {dupe && (
+        <div className="mx-3 mb-3 flex flex-wrap items-center gap-3 rounded-xl border border-s4/40 bg-s4/10 px-4 py-3 text-[13px]">
+          <span className="flex-1">You already have <b>{dupe.name ?? "an event"}</b>{dupe.date ? ` (${dupe.date})` : ""} from this exact brief.</span>
+          <a href={`/dashboard/${dupe.id}`} className="font-medium text-s1 hover:brightness-125">Open it →</a>
+          <button type="button" onClick={(e) => submit(e as unknown as React.FormEvent, true)} className="text-d-ink2 hover:text-d-ink">Create another anyway</button>
+        </div>
+      )}
       {error && <p className="px-4 pb-3 text-[13px] text-crit">{error}</p>}
     </form>
   );

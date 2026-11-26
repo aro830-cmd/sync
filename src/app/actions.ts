@@ -90,6 +90,11 @@ The organiser has set these values by hand — use them exactly and plan around 
   Object.assign(p, fixed); // never let the model drift from what the organiser typed
   if (!p.name || !/^\d{4}-\d{2}-\d{2}$/.test(p.date)) throw new Error("Planner returned an incomplete plan.");
   const free = p.kind === "free";
+  // Same-name events confuse everyone (two "AI-Innovate 2026" cards): add a number if the name is taken.
+  if (!fixed.name) {
+    const same = await must(db().from("events").select("id").neq("id", eventId).ilike("name", p.name));
+    if (same.length) p.name = `${p.name} #${same.length + 1}`;
+  }
   await must(
     db()
       .from("events")
@@ -252,6 +257,7 @@ Return JSON: {"announcement": string, "reminder_subject": string, "reminder_body
 
 async function reporting(eventId: string) {
   const ev = await getEvent(eventId);
+  if (ev.date && ev.date > TODAY()) return { summary: `Skipped — the report is written after the event (${ev.date}). It uses real attendance, so run it once the day is over.`, output: null };
   const s = await reportStats(eventId);
   const free = ev.plan?.kind === "free";
   const { v: r, off } = await smart<{ summary: string }>(
@@ -313,6 +319,60 @@ async function attempt(eventId: string, agent: string, fn: () => Promise<string>
   } finally {
     revalidatePath(`/dashboard/${eventId}`);
   }
+}
+
+/** An upcoming event created from the same brief — so the composer can offer to open it instead of making a duplicate. */
+export async function findDuplicate(brief: string) {
+  await requireAdmin();
+  const { data } = await db().from("events").select("id, name, date").ilike("brief", brief.trim()).or(`date.is.null,date.gte.${TODAY()}`).order("created_at", { ascending: false }).limit(1);
+  return data?.[0] ?? null;
+}
+
+/** Permanently delete an event and everything attached to it (registrations, sponsors, shifts…). The UI asks first. */
+export async function deleteEvent(eventId: string) {
+  await requireAdmin();
+  const ev = await must(db().from("events").delete().eq("id", eventId).select("name").single());
+  await db().from("audit_log").insert({ entity: "event", entity_id: eventId, action: "deleted", detail: { name: ev.name } }).then(() => {}, () => {});
+  revalidatePath("/dashboard");
+  redirect("/dashboard");
+}
+
+/** Post-event reports for every past event that doesn't have one yet. */
+export async function generateMissingReports() {
+  await requireAdmin();
+  const past = await must(db().from("events").select("id").lt("date", TODAY()).is("summary", null).not("name", "is", null));
+  let ok = 0;
+  for (const e of past) if ((await runAgent(e.id, "reporting")).ok) ok++;
+  revalidatePath("/dashboard/past");
+  return { ok: true, message: past.length ? `Wrote ${ok} of ${past.length} missing reports — PDFs are ready` : "Every past event already has a report" };
+}
+
+/** The event's pitch: The Why?, Appeal, Trigger, Disruption — for presenting it. Stored in plan.pitch. */
+export async function generatePitch(eventId: string) {
+  return attempt(eventId, "comms", async () => {
+    const ev = await getEvent(eventId);
+    if (!ev.name) throw new Error("Run the Planner first — the pitch is built from the plan.");
+    const free = ev.plan?.kind === "free";
+    const partners = (await must(db().from("sponsors").select("company").eq("event_id", eventId).eq("status", "confirmed"))).map((s) => s.company);
+    const { v, off } = await smart<{ why: string; appeal: string[]; trigger: string; disruption: string[] }>(
+      `You are pitching the college event "${ev.name}" (${ev.theme}) on ${ev.date} at ${ev.venue}, ~${ev.expected_attendees} students, ${free ? "free entry" : `budget ₹${ev.budget}`}${partners.length ? `, partners: ${partners.join(", ")}` : ""}.
+Write a short pitch in four parts, concrete to this event, no hype words:
+"why": 2-3 sentences — the problem or need this event answers for students;
+"appeal": 4 bullet strings — what makes students want to come (prizes, people, skills, perks);
+"trigger": 2 sentences — the moment/deadline that makes them register now, including the date;
+"disruption": 3 bullet strings — what is new or different compared with usual college events.
+Return JSON: {"why": string, "appeal": [string], "trigger": string, "disruption": [string]}`,
+      () => ({
+        why: `Students want hands-on experience with ${ev.theme?.toLowerCase() ?? "new technology"}, but classes rarely give them a day to build, meet people and ship. ${ev.name} gives them exactly that.`,
+        appeal: [free ? "Free entry, open to all branches" : "Food, prizes and swag for every participant", `${ev.expected_attendees} students in one room at ${ev.venue}`, "Mentors and a certificate for everyone who attends", partners.length ? `Backed by ${partners.join(", ")}` : "Real problems, real feedback from organisers"],
+        trigger: `It happens on ${new Date(ev.date).toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long" })} and seats are limited to ${ev.expected_attendees}. Registration closes when they're gone — sign up today.`,
+        disruption: ["Run end to end by AI agents with organisers approving every step", "Every attendee gets a verified certificate automatically", "Sponsors get a real post-event report, not a thank-you email"],
+      }),
+    );
+    const pitch = { why: v.why, appeal: (v.appeal ?? []).slice(0, 6), trigger: v.trigger, disruption: (v.disruption ?? []).slice(0, 5), generated_at: new Date().toISOString(), offline: off };
+    await must(db().from("events").update({ plan: { ...ev.plan, pitch } }).eq("id", eventId));
+    return `Pitch written for ${ev.name}${off ? " (offline mode)" : ""}`;
+  });
 }
 
 export async function createEvent(brief: string, leads: string, volunteers: string) {

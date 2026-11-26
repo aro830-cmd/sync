@@ -31,7 +31,7 @@ export function EventCard({ e, now }: { e: DeskEvent; now: number }) {
             <span className={`rounded-full px-2 py-0.5 text-[10.5px] font-medium ${free ? "bg-s3/15 text-s3" : "bg-s1/15 text-s1"}`}>{free ? "Free" : "Funded"}</span>
             {days != null && <span className="text-[11.5px] text-d-ink3">{days === 0 ? "Today" : days === 1 ? "Tomorrow" : `in ${days} days`}</span>}
           </div>
-          <div className="mt-1.5 truncate text-[17px] leading-snug font-semibold tracking-[-0.01em]">{e.name ?? <span className="text-d-ink3">Planning…</span>}</div>
+          <div className="mt-1.5 line-clamp-2 text-[17px] leading-snug font-semibold tracking-[-0.01em]" title={e.name ?? undefined}>{e.name ?? <span className="text-d-ink3">Planning…</span>}</div>
           <div className="truncate text-[12.5px] text-d-ink3">{e.venue ?? e.brief}</div>
         </div>
         <Ring value={reg} max={e.expected_attendees ?? reg} color="var(--s3)">{e.expected_attendees ? `${Math.min(100, Math.round((reg / e.expected_attendees) * 100))}%` : reg}</Ring>
