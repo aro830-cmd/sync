@@ -147,13 +147,13 @@ console.log(`seeded roster of ${ROSTER.length}`);
 const { error: noProfiles } = await db.from("volunteer_profiles").select("id").limit(1);
 if (!noProfiles) {
   const P = {
-    "aditi@example.com": [["registration", "design"], ["check_in_lead", "community_storyteller"], [{ weekday: 6, from: "07:00", to: "18:00" }, { weekday: 2, from: "08:00", to: "14:00" }], "Run a check-in desk end to end", ["english", "kannada"], ["certificate", "recommendation"]],
-    "rahul@example.com": [["av"], ["livestream_producer"], [{ weekday: 6, from: "09:00", to: "20:00" }, { weekday: 2, from: "09:00", to: "16:00" }], "Live production and streaming", ["english", "malayalam"], ["merch", "certificate"]],
-    "sneha@example.com": [["logistics", "hospitality"], ["sponsor_liaison", "accessibility_ambassador"], [{ weekday: 2, from: "08:00", to: "16:00" }], "Client management with sponsors", ["english", "tamil"], ["recommendation"]],
-    "karthik@example.com": [["av", "tech"], ["hacker_concierge", "demo_floor_captain"], [{ weekday: 2, from: "09:00", to: "20:00" }], "Operations under pressure", ["english", "kannada", "hindi"], ["mentor_session"]],
-    "meera@example.com": [["social", "design"], ["community_storyteller"], [{ weekday: 2, from: "09:00", to: "16:00" }], "Content creation for brands", ["english", "malayalam"], ["merch", "priority_access"]],
-    "farhan@example.com": [["tech", "logistics"], ["sustainability_lead", "hacker_concierge"], [{ weekday: 2, from: "12:00", to: "21:00" }], "Sustainable event operations", ["english", "urdu", "hindi"], ["meal", "certificate"]],
-    "ishita.das@example.com": [["registration", "hospitality"], ["mentor_coordinator", "check_in_lead"], [{ weekday: 2, from: "07:00", to: "15:00" }], "Networking with mentors", ["english", "bengali"], ["mentor_session", "certificate"]],
+    "aditi@example.com": [["registration", "design"], ["check_in_lead", "community_storyteller"], [{ weekday: 0, from: "07:00", to: "18:00" }, { weekday: 6, from: "07:00", to: "18:00" }, { weekday: 2, from: "08:00", to: "14:00" }], "Run a check-in desk end to end", ["english", "kannada"], ["certificate", "recommendation"]],
+    "rahul@example.com": [["av"], ["livestream_producer"], [{ weekday: 0, from: "08:00", to: "20:00" }, { weekday: 6, from: "09:00", to: "20:00" }, { weekday: 2, from: "09:00", to: "16:00" }], "Live production and streaming", ["english", "malayalam"], ["merch", "certificate"]],
+    "sneha@example.com": [["logistics", "hospitality"], ["sponsor_liaison", "accessibility_ambassador"], [{ weekday: 0, from: "08:00", to: "17:00" }, { weekday: 2, from: "08:00", to: "16:00" }], "Client management with sponsors", ["english", "tamil"], ["recommendation"]],
+    "karthik@example.com": [["av", "tech"], ["hacker_concierge", "demo_floor_captain"], [{ weekday: 0, from: "08:00", to: "20:00" }, { weekday: 2, from: "09:00", to: "20:00" }], "Operations under pressure", ["english", "kannada", "hindi"], ["mentor_session"]],
+    "meera@example.com": [["social", "design"], ["community_storyteller"], [{ weekday: 0, from: "09:00", to: "16:00" }, { weekday: 2, from: "09:00", to: "16:00" }], "Content creation for brands", ["english", "malayalam"], ["merch", "priority_access"]],
+    "farhan@example.com": [["tech", "logistics"], ["sustainability_lead", "hacker_concierge"], [{ weekday: 0, from: "12:00", to: "21:00" }, { weekday: 2, from: "12:00", to: "21:00" }], "Sustainable event operations", ["english", "urdu", "hindi"], ["meal", "certificate"]],
+    "ishita.das@example.com": [["registration", "hospitality"], ["mentor_coordinator", "check_in_lead"], [{ weekday: 0, from: "07:00", to: "15:00" }, { weekday: 2, from: "07:00", to: "15:00" }], "Networking with mentors", ["english", "bengali"], ["mentor_session", "certificate"]],
   };
   for (const [email, [skills, preferred_roles, availability, learning_goals, languages, reward_prefs]] of Object.entries(P))
     await must(db.from("volunteer_profiles").update({ skills, preferred_roles, availability, learning_goals, languages, reward_prefs, opted_in: true, available: true }).eq("email", email));

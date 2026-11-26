@@ -760,11 +760,13 @@ export async function suggestRoles(eventId: string) {
       if (UNPOPULAR.has(h.role_key)) load[h.profile_id].unpopular++;
     }
     const open = roles.filter((r) => !filled.has(r.key)).map((r) => ({ key: r.key, name: r.name, skills: r.skills, from: ROLE_WINDOWS[r.key]?.[0] ?? "09:00", to: ROLE_WINDOWS[r.key]?.[1] ?? "17:00" }));
-    const out = suggest(open, profiles, load, ev.date, taken).filter((s) => s.profileId && !declinedPairs.has(`${s.roleKey}:${s.profileId}`));
+    const all = suggest(open, profiles, load, ev.date, taken);
+    const out = all.filter((s) => s.profileId && !declinedPairs.has(`${s.roleKey}:${s.profileId}`));
+    const nobody = all.filter((s) => !s.profileId).length;
     await must(db().from("role_requests").delete().eq("event_id", eventId).eq("status", "suggested"));
     if (out.length) await must(db().from("role_requests").insert(out.map((s) => ({ event_id: eventId, role_key: s.roleKey, profile_id: s.profileId, status: "suggested", reason: s.reason }))));
     await audit("role_requests", null, "suggested", { count: out.length, open: open.length }, eventId);
-    return `${out.length} of ${open.length} open roles have a suggestion — review, then send requests`;
+    return `${out.length} of ${open.length} open roles have a suggestion${nobody ? ` · ${nobody} have nobody available at that time` : ""} — review, then send requests`;
   });
 }
 
