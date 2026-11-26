@@ -124,10 +124,29 @@ export function offlineSuggestions(theme: string, tierNames: string[], known: Se
     .map(({ s, score }, i) => ({ company: s.company, why: `${s.company} ${s.why}.`, fit_score: Math.min(95, score + (8 - i)), tier: tier(i) }));
 }
 
+/** The funding request: event and audience, the exact ask, the publicity the sponsor gets, and a reply-by date. */
 export function offlinePitch(ev: { name: string; theme: string; date: string; venue: string; expected_attendees: number }, company: string, tier: { name: string; amount: number; perks: string[] } | undefined) {
+  const day = (t: number) => new Date(t).toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" });
+  const when = Date.parse(ev.date);
+  const ask = tier?.amount ? `₹${tier.amount.toLocaleString("en-IN")}` : "in-kind support (prizes, credits or swag)";
   return {
-    subject: `Partner with ${ev.name} — ${ev.expected_attendees} student builders`,
-    body: `Hi ${company} team,\n\nWe're running ${ev.name} (${ev.theme}) on ${ev.date} at ${ev.venue}, with around ${ev.expected_attendees} students from our college.\n\n${tier ? `As our ${tier.name} partner${tier.amount ? ` (₹${tier.amount.toLocaleString("en-IN")})` : ""} you'd get: ${tier.perks.join(", ")}.` : "We'd love to have you on board as a partner."}\n\nCould we set up a 15-minute call this week?\n\nTeam ${ev.name}`,
+    subject: `${tier?.name ?? "Partnership"} sponsorship request: ${ev.name}, ${new Date(when).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}`,
+    body: [
+      `Hi ${company} team,`,
+      `We're the student tech club organising ${ev.name} — ${ev.theme} — on ${day(when)} at ${ev.venue}. We expect around ${ev.expected_attendees} students, mostly engineering undergraduates who build with tools like yours.`,
+      `Our ask: ${tier?.name ?? "a"} partnership at ${ask}. It goes directly into running the event — food, prizes, venue and printing.`,
+      `What ${company} gets in return:`,
+      [
+        ...(tier?.perks ?? []).map((p) => `- ${p}`),
+        "- Your logo on every poster, standee and the stage backdrop",
+        "- 3 dedicated posts across our Instagram and LinkedIn (about 4,000 students follow the club)",
+        "- A thank-you mention on stage at the opening and the closing",
+        "- Your logo and link on the public registration page",
+        `- A post-event report with real attendance numbers, photos and how ${company} was featured`,
+      ].join("\n"),
+      `Could you let us know by ${day(when - 10 * 86_400_000)} so we can finalise the posters? Happy to set up a 15-minute call this week if that helps.`,
+      `Thank you,\nTeam ${ev.name}`,
+    ].join("\n\n"),
   };
 }
 

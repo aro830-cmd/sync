@@ -141,8 +141,14 @@ Return JSON: {"suggestions": [{"company": string, "why": string, "fit_score": in
   const { v: r, off: off2 } = await smart<{ pitches: { n: number; tier: string; fit_score: number; subject: string; body: string }[] }>(
     `You are the Sponsorship agent for "${ev.name}" (${ev.theme}), on ${ev.date} at ${ev.venue}, ~${ev.expected_attendees} student attendees.
 Sponsor tiers: ${JSON.stringify(ev.plan?.tiers ?? [])}
-For each company below, pick the best-fit tier, score fit 0-100 for this audience, and write a short, specific cold email
-(under 160 words, plain text, no placeholders like [Name], sign off as "Team ${ev.name}"). Mention what the company gets.
+For each company below, pick the best-fit tier, score fit 0-100 for this audience, and write a funding-request email
+(180-260 words, plain text, no placeholders like [Name], sign off as "Team ${ev.name}") with, in this order:
+1) who we are and the event: name, theme, date, venue, ~${ev.expected_attendees} students;
+2) the ask: the tier name and its exact rupee amount, and what the money pays for;
+3) the publicity they get, as "- " bullet lines: the tier perks, logo on posters/standees/stage backdrop, 3 social posts on the club's
+Instagram and LinkedIn, a thank-you mention on stage, logo on the public registration page, and a post-event report with real numbers;
+4) a reply-by date 10 days before the event and an offer of a short call.
+The subject line names the tier and the event.
 Companies: ${JSON.stringify(leads.map((l, n) => ({ n, company: l.company })))}
 Return JSON: {"pitches": [{"n": integer (same n), "tier": string, "fit_score": integer, "subject": string, "body": string}]}`,
     () => ({
@@ -465,17 +471,43 @@ export async function updatePitch(eventId: string, id: string, subject: string, 
   });
 }
 
+/**
+ * Fictional demo sponsors (@example.com) can't receive mail, so with DEMO_INBOX set their pitches land there instead,
+ * labelled with the company they were written for. Real addresses are always used as-is.
+ */
+function pitchRecipient(email: string) {
+  const inbox = process.env.DEMO_INBOX?.trim();
+  return inbox && /@([\w-]+\.)*example\.com$/i.test(email) ? inbox : email;
+}
+
+async function deliverPitch(s: { id: string; company: string; contact_email: string; pitch_subject: string; pitch_body: string }) {
+  const to = pitchRecipient(s.contact_email);
+  const demo = to !== s.contact_email;
+  await sendMail({
+    to,
+    subject: demo ? `[Demo → ${s.company}] ${s.pitch_subject}` : s.pitch_subject,
+    text: demo ? `(Demo copy — this pitch is addressed to ${s.company} <${s.contact_email}>.)\n\n${s.pitch_body}` : s.pitch_body,
+  });
+  await must(db().from("sponsors").update({ status: "contacted" }).eq("id", s.id));
+  return to;
+}
+
+/** Send one reviewed pitch. Only drafts can be sent, and only when the organiser clicks. */
+export async function sendPitch(eventId: string, id: string) {
+  return attempt(eventId, "sponsorship", async () => {
+    const s = await must(db().from("sponsors").select("*").eq("id", id).eq("event_id", eventId).eq("status", "drafted").maybeSingle());
+    if (!s) throw new Error("That pitch was already sent or isn't drafted yet.");
+    const to = await deliverPitch(s);
+    return `Pitch to ${s.company} sent to ${to}`;
+  });
+}
+
 export async function sendPitches(eventId: string) {
   return attempt(eventId, "sponsorship", async () => {
     const drafts = await must(db().from("sponsors").select("*").eq("event_id", eventId).eq("status", "drafted"));
     if (!drafts.length) throw new Error("No drafted pitches to send. Run the Sponsorship agent first.");
-    let sent = 0;
-    for (const s of drafts) {
-      await sendMail({ to: s.contact_email, subject: s.pitch_subject, text: s.pitch_body });
-      await must(db().from("sponsors").update({ status: "contacted" }).eq("id", s.id));
-      sent++;
-    }
-    return `Sent ${sent} pitch email${sent > 1 ? "s" : ""}`;
+    for (const s of drafts) await deliverPitch(s);
+    return `Sent ${drafts.length} pitch email${drafts.length > 1 ? "s" : ""}`;
   });
 }
 

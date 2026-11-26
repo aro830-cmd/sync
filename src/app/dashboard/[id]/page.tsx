@@ -46,6 +46,7 @@ async function Desk({ params }: { params: Promise<{ id: string }> }) {
       attendees: attendees.data!,
       runs: runs.data!,
       alumni: alumni(past.data as unknown as Alum[]),
+      demoInbox: process.env.DEMO_INBOX?.trim() || null,
     };
   } catch (e) {
     return <SetupNotice message={e instanceof Error ? e.message : String(e)} />;

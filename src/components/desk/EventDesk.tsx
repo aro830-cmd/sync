@@ -15,7 +15,7 @@ import { Shell } from "./shell";
 import { Button, Card, Empty, Label, Stat, ToastProvider, ease, useToast } from "./ui";
 
 type Alum = { company: string; email: string; tier: string | null; event: string; times: number };
-type Data = { event: EventRow; sponsors: Sponsor[]; volunteers: Volunteer[]; tasks: Task[]; attendees: Attendee[]; runs: Run[]; alumni: Alum[] };
+type Data = { event: EventRow; sponsors: Sponsor[]; volunteers: Volunteer[]; tasks: Task[]; attendees: Attendee[]; runs: Run[]; alumni: Alum[]; demoInbox: string | null };
 type Live = Partial<Record<AgentName, "running" | "done" | "failed">>;
 type Section = "overview" | AgentName;
 type AgentState = "idle" | "running" | "done" | "failed";
@@ -640,7 +640,7 @@ const NEXT: Partial<Record<Sponsor["status"], Sponsor["status"][]>> = {
   declined: ["replied"],
 };
 
-function Sponsors({ event, sponsors, alumni }: Data) {
+function Sponsors({ event, sponsors, alumni, demoInbox }: Data) {
   const [pending, go] = useAction();
   const [open, setOpen] = useState<string | null>(null);
   const n = (...s: Sponsor["status"][]) => sponsors.filter((x) => s.includes(x.status)).length;
@@ -748,6 +748,8 @@ function Sponsors({ event, sponsors, alumni }: Data) {
         </AnimatePresence>
       </Card>
 
+      <Review eventId={event.id} drafts={sponsors.filter((s) => s.status === "drafted")} tierAmt={tierAmt} demoInbox={demoInbox} />
+
       <Suggestions event={event} />
       <PastPartners eventId={event.id} alumni={alumni.filter((a) => !sponsors.some((s) => s.company === a.company))} />
 
@@ -755,6 +757,57 @@ function Sponsors({ event, sponsors, alumni }: Data) {
         <AddLines label="Company, email" placeholder="Atlassian, university@atlassian.com" onAdd={(t) => act.addLeads(event.id, t)} demo={DEMO_LEADS} />
       </Card>
     </div>
+  );
+}
+
+/** Drafted pitches as full email previews: read, edit, then send one by one or all at once. Nothing sends on its own. */
+function Review({ eventId, drafts, tierAmt, demoInbox }: { eventId: string; drafts: Sponsor[]; tierAmt: (s: Sponsor) => number; demoInbox: string | null }) {
+  const [pending, go] = useAction();
+  const [i, setI] = useState(0);
+  if (!drafts.length) return null;
+  const s = drafts[Math.min(i, drafts.length - 1)];
+  const demo = !!demoInbox && /@([\w-]+\.)*example\.com$/i.test(s.contact_email);
+  return (
+    <Card
+      title={`Review & send · ${drafts.length} pitch${drafts.length === 1 ? "" : "es"} waiting`}
+      sub="Written by the Sponsorship agent. Read each one, edit anything, then send — nothing goes out until you click."
+      action={
+        <Button variant="accent" pending={pending} onClick={() => go(() => act.sendPitches(eventId))}>
+          Approve & send all {drafts.length}
+        </Button>
+      }
+    >
+      <div className="grid gap-3 lg:grid-cols-[240px_1fr]">
+        <ul className="flex gap-1.5 overflow-x-auto lg:flex-col lg:overflow-visible">
+          {drafts.map((d, k) => (
+            <li key={d.id}>
+              <button
+                onClick={() => setI(k)}
+                className={`w-full min-w-[180px] rounded-xl border px-3 py-2.5 text-left transition-colors ${d.id === s.id ? "border-s1/50 bg-s1/10" : "border-d-line hover:border-white/20"}`}
+              >
+                <span className="block truncate text-[13.5px] font-medium">{d.company}</span>
+                <span className="block text-[11.5px] text-d-ink3">{d.tier ?? "—"}{tierAmt(d) ? ` · ${inr(tierAmt(d))}` : ""}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+        <div className="rounded-xl border border-d-line bg-black/25">
+          <div className="space-y-1 border-b border-d-line px-5 py-3 text-[12.5px]">
+            <div className="flex gap-3"><span className="w-14 text-d-ink3">To</span><span className="truncate text-d-ink">{s.company} &lt;{s.contact_email}&gt;</span></div>
+            {demo && <div className="flex gap-3"><span className="w-14 text-d-ink3">Delivers</span><span className="truncate text-s3">{demoInbox} (demo inbox — this sponsor is fictional)</span></div>}
+            <div className="flex gap-3"><span className="w-14 text-d-ink3">From</span><span className="text-d-ink2">Your club Gmail account</span></div>
+          </div>
+          <div className="p-5">
+            <Pitch key={s.id} eventId={eventId} s={s} onClose={() => {}} hideClose />
+            <div className="mt-5 flex justify-end gap-2 border-t border-d-line pt-4">
+              <Button variant="accent" pending={pending} onClick={() => go(() => act.sendPitch(eventId, s.id), () => setI(0))}>
+                Send to {s.company} →
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Card>
   );
 }
 
@@ -832,7 +885,7 @@ function Suggestion({ eventId, s, i }: { eventId: string; s: NonNullable<NonNull
   );
 }
 
-function Pitch({ eventId, s, onClose }: { eventId: string; s: Sponsor; onClose: () => void }) {
+function Pitch({ eventId, s, onClose, hideClose }: { eventId: string; s: Sponsor; onClose: () => void; hideClose?: boolean }) {
   const [editing, setEditing] = useState(false);
   const [subject, setSubject] = useState(s.pitch_subject ?? "");
   const [body, setBody] = useState(s.pitch_body ?? "");
@@ -844,11 +897,11 @@ function Pitch({ eventId, s, onClose }: { eventId: string; s: Sponsor; onClose: 
     <>
       <div className="flex items-baseline justify-between gap-4">
         <div className="min-w-0 truncate text-[12px] text-d-ink3">
-          To {s.company} · {s.contact_email}
+          {hideClose ? "Message" : `To ${s.company} · ${s.contact_email}`}
         </div>
         <div className="flex shrink-0 gap-4 text-[12.5px]">
           {draft && !editing && <button onClick={() => setEditing(true)} className="text-s1 hover:brightness-125">Edit</button>}
-          <button onClick={onClose} className="text-d-ink3 hover:text-d-ink">Close</button>
+          {!hideClose && <button onClick={onClose} className="text-d-ink3 hover:text-d-ink">Close</button>}
         </div>
       </div>
       {editing ? (

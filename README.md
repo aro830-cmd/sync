@@ -24,6 +24,7 @@ Next.js 16 + TypeScript · Tailwind v4 + motion · Gemini · Supabase Postgres �
    | `GMAIL_USER`, `GMAIL_APP_PASSWORD` | Google Account → Security → App passwords |
    | `ADMIN_PASSCODE` | Any password; guards `/dashboard` |
    | `GEMINI_API_KEY_FALLBACK` (optional) | Extra Gemini keys, comma-separated, used when the main key is out of quota |
+   | `DEMO_INBOX` (optional) | Pitches to fictional `@example.com` sponsors are delivered here for demos |
    | `RELAY_OFFLINE` (optional) | `1` = agents never call Gemini and use offline templates (safe demo mode) |
    | `SESSION_SECRET` | Any long random string; signs student login cookies |
 
