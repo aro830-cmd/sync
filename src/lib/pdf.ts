@@ -8,7 +8,7 @@ const MUTED = rgb(0.34, 0.33, 0.29);
 const SIGNAL = rgb(0.83, 0.27, 0.12);
 
 // Standard PDF fonts only cover Latin-1; LLM text often has ₹, smart quotes, dashes.
-const clean = (s: string) =>
+export const clean = (s: string) =>
   s
     .replace(/₹/g, "Rs. ")
     .replace(/[‘’]/g, "'")
@@ -16,7 +16,7 @@ const clean = (s: string) =>
     .replace(/[–—]/g, "-")
     .replace(/[^\x20-\x7E\xA0-\xFF\n]/g, "");
 
-function wrap(text: string, font: PDFFont, size: number, width: number) {
+export function wrap(text: string, font: PDFFont, size: number, width: number) {
   const lines: string[] = [];
   for (const para of clean(text).split("\n")) {
     let line = "";

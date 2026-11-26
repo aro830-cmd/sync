@@ -12,6 +12,7 @@ export type EventRow = {
   plan: {
     kind?: "funded" | "free";
     suggestions?: { company: string; why: string; fit_score: number; tier: string }[];
+    metrics?: { social_reach: number | null; challenge_participants: number | null; photos: string[] };
     budget_split?: { head: string; amount: number }[];
     tiers?: { name: string; amount: number; perks: string[] }[];
     timeline?: { date: string; milestone: string }[];
@@ -28,6 +29,12 @@ export type Sponsor = {
   pitch_subject: string | null;
   pitch_body: string | null;
   status: "lead" | "drafted" | "contacted" | "replied" | "confirmed" | "declined";
+  // migration 002 (absent until it runs)
+  company_id?: string | null;
+  contribution_type?: string | null;
+  value?: number | null;
+  terms?: Record<string, string> | null;
+  proposal_sent_at?: string | null;
 };
 
 export type Volunteer = { id: string; name: string; email: string; skills: string | null };

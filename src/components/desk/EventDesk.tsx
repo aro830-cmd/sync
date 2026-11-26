@@ -8,6 +8,7 @@ import * as act from "@/app/actions";
 import { AGENTS, agentsFor, type AgentName } from "@/lib/agents";
 import { DEMO_LEADS, DEMO_VOLUNTEERS } from "@/lib/demo";
 import { parseSkills, roleOf } from "@/lib/roster";
+import { Deals, Metrics, type Crm } from "./Deals";
 import { isFree, type Attendee, type EventRow, type Run, type Sponsor, type Task, type Volunteer } from "@/lib/types";
 import { BarList, LineChart, Meter, MilestoneTrack, SegmentedBar, ShiftTimeline, inr } from "./charts";
 import { Icon } from "./icons";
@@ -15,7 +16,7 @@ import { Shell } from "./shell";
 import { Button, Card, Empty, Label, Stat, ToastProvider, ease, useToast } from "./ui";
 
 type Alum = { company: string; email: string; tier: string | null; event: string; times: number };
-type Data = { event: EventRow; sponsors: Sponsor[]; volunteers: Volunteer[]; tasks: Task[]; attendees: Attendee[]; runs: Run[]; alumni: Alum[]; demoInbox: string | null; invitable: number; studentInbox: string | null };
+type Data = { event: EventRow; sponsors: Sponsor[]; volunteers: Volunteer[]; tasks: Task[]; attendees: Attendee[]; runs: Run[]; alumni: Alum[]; demoInbox: string | null; invitable: number; studentInbox: string | null; crm: Crm; today: string };
 type Live = Partial<Record<AgentName, "running" | "done" | "failed">>;
 type Section = "overview" | AgentName;
 type AgentState = "idle" | "running" | "done" | "failed";
@@ -640,7 +641,7 @@ const NEXT: Partial<Record<Sponsor["status"], Sponsor["status"][]>> = {
   declined: ["replied"],
 };
 
-function Sponsors({ event, sponsors, alumni, demoInbox }: Data) {
+function Sponsors({ event, sponsors, alumni, demoInbox, crm, today }: Data) {
   const [pending, go] = useAction();
   const [open, setOpen] = useState<string | null>(null);
   const n = (...s: Sponsor["status"][]) => sponsors.filter((x) => s.includes(x.status)).length;
@@ -749,6 +750,8 @@ function Sponsors({ event, sponsors, alumni, demoInbox }: Data) {
       </Card>
 
       <Review eventId={event.id} drafts={sponsors.filter((s) => s.status === "drafted")} tierAmt={tierAmt} demoInbox={demoInbox} />
+
+      <Deals event={event} sponsors={sponsors} crm={crm} today={today} />
 
       <Suggestions event={event} />
       <PastPartners eventId={event.id} alumni={alumni.filter((a) => !sponsors.some((s) => s.company === a.company))} />
@@ -1173,6 +1176,15 @@ function Invites({ event, invitable, studentInbox, ready }: { event: EventRow; i
 // ───────────── 05 reporting ─────────────
 
 function Reporting({ event, attendees, sponsors }: Data) {
+  return (
+    <div className="space-y-3">
+      <ReportingBody event={event} attendees={attendees} sponsors={sponsors} />
+      {!isFree(event) && <Metrics event={event} />}
+    </div>
+  );
+}
+
+function ReportingBody({ event, attendees, sponsors }: Pick<Data, "event" | "attendees" | "sponsors">) {
   const [pending, go] = useAction();
   const free = isFree(event);
   const checked = attendees.filter((a) => a.checked_in).length;

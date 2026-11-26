@@ -12,7 +12,7 @@ import { assign } from "@/lib/schedule";
 import { appUrl, posterEvent, posterPng } from "@/lib/poster";
 import { DEMO_MEMBERS, joinSkills, parseSkills } from "@/lib/roster";
 import { DEFAULT_WEIGHTS } from "@/lib/fit";
-import { CONTRIBUTIONS } from "@/lib/types";
+import { CONTRIBUTIONS, PAYMENT_STATUSES } from "@/lib/types";
 import { offlineComms, offlinePitch, offlinePlan, offlineReport, offlineSuggestions, offlineTasks } from "@/lib/offline";
 
 import type { AgentName } from "@/lib/agents";
@@ -536,6 +536,122 @@ export async function leadFromCompany(eventId: string, companyId: string) {
     );
     await audit("sponsor", r.id, "lead_from_research", { company: c.name }, eventId);
     return `${c.name} added as a lead — run Sponsorship to draft the pitch`;
+  });
+}
+
+// ───────────────────────── sponsor deals: terms, payments, deliverables (migration 002) ─────────────────────────
+
+const TERM_KEYS = ["obligations", "exclusivity", "data_sharing", "branding", "payment_terms", "reporting", "deadline"] as const;
+
+async function sponsorOf(eventId: string, sponsorId: string) {
+  return must(db().from("sponsors").select("id, company, tier, status, terms").eq("id", sponsorId).eq("event_id", eventId).single());
+}
+
+export async function saveDeal(eventId: string, sponsorId: string, d: { value: number | null; contribution_type: string | null; terms: Record<string, string> }) {
+  return attempt(eventId, "sponsorship", async () => {
+    const s = await sponsorOf(eventId, sponsorId);
+    const value = d.value == null || Number.isNaN(d.value) ? null : Math.round(d.value);
+    if (value != null && (value < 0 || value > 10_000_000)) throw new Error("Value must be between ₹0 and ₹1 crore.");
+    if (d.contribution_type && !(CONTRIBUTIONS as readonly string[]).includes(d.contribution_type)) throw new Error("Unknown contribution type.");
+    const terms = Object.fromEntries(TERM_KEYS.map((k) => [k, String(d.terms[k] ?? "").trim().slice(0, 500)]).filter(([, v]) => v));
+    await must(db().from("sponsors").update({ value, contribution_type: d.contribution_type || null, terms }).eq("id", sponsorId));
+    await audit("sponsor", sponsorId, "deal_terms_saved", { company: s.company, value, terms }, eventId);
+    return `Deal terms saved for ${s.company}`;
+  });
+}
+
+export async function addPayment(eventId: string, sponsorId: string, p: { label: string; amount: number; due_date: string }) {
+  return attempt(eventId, "sponsorship", async () => {
+    const s = await sponsorOf(eventId, sponsorId);
+    const label = p.label.trim().slice(0, 120);
+    const amount = Math.round(Number(p.amount));
+    if (!label) throw new Error("Name the milestone, e.g. “50% on signing”.");
+    if (!Number.isFinite(amount) || amount <= 0) throw new Error("Amount must be more than ₹0.");
+    if (p.due_date && !/^\d{4}-\d{2}-\d{2}$/.test(p.due_date)) throw new Error("Pick a due date.");
+    const r = await must(db().from("sponsor_payments").insert({ sponsor_id: sponsorId, label, amount, due_date: p.due_date || null }).select("id").single());
+    await audit("payment", r.id, "milestone_added", { company: s.company, label, amount }, eventId);
+    return `Payment milestone added for ${s.company}`;
+  });
+}
+
+export async function updatePayment(eventId: string, paymentId: string, status: string, received: number) {
+  return attempt(eventId, "sponsorship", async () => {
+    if (!(PAYMENT_STATUSES as readonly string[]).includes(status)) throw new Error("Unknown payment status.");
+    const p = await must(db().from("sponsor_payments").select("id, amount, label, sponsors!inner(event_id, company)").eq("id", paymentId).eq("sponsors.event_id", eventId).single());
+    const got = status === "received" ? p.amount : Math.max(0, Math.min(p.amount, Math.round(Number(received) || 0)));
+    if (status === "partially_received" && (got <= 0 || got >= p.amount)) throw new Error("For a partial payment, enter how much arrived (less than the full amount).");
+    await must(db().from("sponsor_payments").update({ status, received_amount: got, updated_at: new Date().toISOString() }).eq("id", paymentId));
+    const company = (p.sponsors as unknown as { company: string }).company;
+    await audit("payment", paymentId, "status_changed", { company, label: p.label, status, received: got }, eventId);
+    return `${company} · ${p.label}: ${status.replace(/_/g, " ")}`;
+  });
+}
+
+export async function deletePayment(eventId: string, paymentId: string) {
+  return attempt(eventId, "sponsorship", async () => {
+    const p = await must(db().from("sponsor_payments").select("id, label, sponsors!inner(event_id)").eq("id", paymentId).eq("sponsors.event_id", eventId).single());
+    await must(db().from("sponsor_payments").delete().eq("id", paymentId));
+    await audit("payment", paymentId, "milestone_deleted", { label: p.label }, eventId);
+    return "Milestone removed";
+  });
+}
+
+/** Turn the sponsor's tier perks plus the standard publicity plan into a checklist. */
+export async function generateDeliverables(eventId: string, sponsorId: string) {
+  return attempt(eventId, "sponsorship", async () => {
+    const s = await sponsorOf(eventId, sponsorId);
+    const ev = await getEvent(eventId);
+    const perks: string[] = (ev.plan?.tiers ?? []).find((t: { name: string }) => t.name === s.tier)?.perks ?? [];
+    const items = [...perks, "Logo on posters, standees and stage backdrop", "3 social posts on Instagram and LinkedIn", "Thank-you mention on stage", "Logo and link on the registration page", "Post-event partner report sent"];
+    const have = new Set((await must(db().from("sponsor_deliverables").select("item").eq("sponsor_id", sponsorId))).map((d) => d.item));
+    const add = items.filter((i) => !have.has(i)).map((item) => ({ sponsor_id: sponsorId, item, due_date: ev.date }));
+    if (add.length) await must(db().from("sponsor_deliverables").insert(add));
+    await audit("sponsor", sponsorId, "deliverables_generated", { company: s.company, count: add.length }, eventId);
+    return add.length ? `Added ${add.length} deliverables for ${s.company}` : "Checklist is already complete";
+  });
+}
+
+export async function addDeliverable(eventId: string, sponsorId: string, item: string) {
+  return attempt(eventId, "sponsorship", async () => {
+    await sponsorOf(eventId, sponsorId);
+    const it = item.trim().slice(0, 200);
+    if (!it) throw new Error("Describe the deliverable.");
+    await must(db().from("sponsor_deliverables").insert({ sponsor_id: sponsorId, item: it }));
+    return "Deliverable added";
+  });
+}
+
+export async function setDeliverable(eventId: string, id: string, done: boolean, evidence: string) {
+  return attempt(eventId, "sponsorship", async () => {
+    const ev = evidence.trim();
+    if (ev && !/^https?:\/\/\S+$/i.test(ev)) throw new Error("Evidence must be a link (http/https), e.g. a photo or post.");
+    const d = await must(db().from("sponsor_deliverables").select("id, item, sponsors!inner(event_id, company)").eq("id", id).eq("sponsors.event_id", eventId).single());
+    await must(db().from("sponsor_deliverables").update({ done, evidence_url: ev || null, done_at: done ? new Date().toISOString() : null }).eq("id", id));
+    await audit("deliverable", id, done ? "delivered" : "reopened", { item: d.item, evidence: ev || null }, eventId);
+    return `${d.item}: ${done ? "delivered" : "reopened"}`;
+  });
+}
+
+export async function markProposalSent(eventId: string, sponsorId: string) {
+  return attempt(eventId, "sponsorship", async () => {
+    const s = await sponsorOf(eventId, sponsorId);
+    await must(db().from("sponsors").update({ proposal_sent_at: new Date().toISOString() }).eq("id", sponsorId));
+    await audit("sponsor", sponsorId, "proposal_sent", { company: s.company }, eventId);
+    return `Proposal marked as sent to ${s.company}`;
+  });
+}
+
+/** Event-level numbers for sponsor reports. Stored in events.plan.metrics, so this works before migration 002. */
+export async function saveMetrics(eventId: string, m: { social_reach: string; challenge_participants: string; photos: string }) {
+  return attempt(eventId, "reporting", async () => {
+    const ev = await getEvent(eventId);
+    const num = (s: string) => (s.trim() === "" ? null : Math.max(0, Math.round(Number(s))));
+    const photos = m.photos.split(/\s+/).map((u) => u.trim()).filter(Boolean);
+    if (photos.some((u) => !/^https?:\/\/\S+$/i.test(u))) throw new Error("Photo links must start with http:// or https://");
+    const metrics = { social_reach: num(m.social_reach), challenge_participants: num(m.challenge_participants), photos: photos.slice(0, 12) };
+    if ([metrics.social_reach, metrics.challenge_participants].some((n) => n != null && Number.isNaN(n))) throw new Error("Reach and participants must be numbers.");
+    await must(db().from("events").update({ plan: { ...ev.plan, metrics } }).eq("id", eventId));
+    return "Event numbers saved";
   });
 }
 

@@ -1,6 +1,6 @@
 import { Suspense } from "react";
 import { notFound } from "next/navigation";
-import { db } from "@/lib/server";
+import { crmReady, db } from "@/lib/server";
 import { EventDesk } from "@/components/desk/EventDesk";
 import { SetupNotice } from "@/components/desk/SetupNotice";
 
@@ -16,6 +16,17 @@ function alumni(rows: Alum[]) {
     else prev.times++;
   }
   return [...by.values()].sort((a, b) => b.times - a.times);
+}
+
+/** Payments and deliverables for this event's sponsors, or null until migration 002 has run. */
+async function crm(sponsorIds: string[]) {
+  if (!(await crmReady())) return null;
+  const ids = sponsorIds.length ? sponsorIds : ["00000000-0000-0000-0000-000000000000"];
+  const [p, d] = await Promise.all([
+    db().from("sponsor_payments").select("*").in("sponsor_id", ids).order("due_date"),
+    db().from("sponsor_deliverables").select("*").in("sponsor_id", ids).order("due_date"),
+  ]);
+  return { payments: p.data ?? [], deliverables: d.data ?? [] };
 }
 
 async function Desk({ params }: { params: Promise<{ id: string }> }) {
@@ -51,6 +62,8 @@ async function Desk({ params }: { params: Promise<{ id: string }> }) {
       // Students who could still be invited (have an account, not registered yet).
       invitable: students.data!.filter((s) => !attendees.data!.some((a) => a.email === s.email)).length,
       studentInbox: process.env.DEMO_STUDENT_INBOX?.trim() || null,
+      crm: await crm(sponsors.data!.map((s) => s.id)),
+      today: new Date().toISOString().slice(0, 10),
     };
   } catch (e) {
     return <SetupNotice message={e instanceof Error ? e.message : String(e)} />;
