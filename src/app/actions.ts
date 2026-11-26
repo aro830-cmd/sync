@@ -11,6 +11,8 @@ import { buildReport, reportStats } from "@/lib/report";
 import { assign } from "@/lib/schedule";
 import { appUrl, posterEvent, posterPng } from "@/lib/poster";
 import { DEMO_MEMBERS, joinSkills, parseSkills } from "@/lib/roster";
+import { DEFAULT_WEIGHTS } from "@/lib/fit";
+import { CONTRIBUTIONS } from "@/lib/types";
 import { offlineComms, offlinePitch, offlinePlan, offlineReport, offlineSuggestions, offlineTasks } from "@/lib/offline";
 
 import type { AgentName } from "@/lib/agents";
@@ -438,6 +440,102 @@ export async function staffEvent(eventId: string) {
     const n = await staffFromRoster(eventId);
     if (!n) throw new Error("No more available club members — mark people available on the Volunteers page.");
     return `Added ${n} available club member${n > 1 ? "s" : ""} from the roster`;
+  });
+}
+
+// ───────────────────────── sponsor research (migration 002) ─────────────────────────
+
+/** Append-only audit trail for organiser actions on sponsors, payments, roles and rewards. Never blocks the action. */
+async function audit(entity: string, entityId: string | null, action: string, detail: Record<string, unknown> = {}, eventId: string | null = null) {
+  await db().from("audit_log").insert({ entity, entity_id: entityId, action, detail, event_id: eventId }).then(() => {}, () => {});
+}
+
+async function researchAction(fn: () => Promise<string>): Promise<Result> {
+  try {
+    await requireAdmin();
+    return { ok: true, message: await fn() };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : String(e) };
+  } finally {
+    revalidatePath("/dashboard/research");
+  }
+}
+
+export type CompanyInput = { id?: string; name: string; industry: string; city: string; website: string; contact_route: string; contribution_types: string[]; est_value: number | null; notes: string };
+
+export async function saveCompany(input: CompanyInput) {
+  return researchAction(async () => {
+    const name = input.name.trim().slice(0, 120);
+    if (!name) throw new Error("Company name is required.");
+    const website = input.website.trim();
+    if (website && !/^https?:\/\/\S+$/i.test(website)) throw new Error("Website must start with http:// or https://");
+    const route = input.contact_route.trim().slice(0, 300);
+    if (route && !/^https?:\/\/\S+$/i.test(route) && !EMAIL.test(route)) throw new Error("Contact route must be an official URL or a published email.");
+    const est = input.est_value == null || Number.isNaN(input.est_value) ? null : Math.round(input.est_value);
+    if (est != null && (est < 0 || est > 10_000_000)) throw new Error("Estimated value must be between ₹0 and ₹1 crore.");
+    const row = {
+      name,
+      industry: input.industry.trim().slice(0, 80) || null,
+      city: input.city.trim().slice(0, 80) || null,
+      website: website || null,
+      contact_route: route || null,
+      contribution_types: input.contribution_types.filter((c) => (CONTRIBUTIONS as readonly string[]).includes(c)),
+      est_value: est,
+      notes: input.notes.trim().slice(0, 2000) || null,
+    };
+    const saved = input.id
+      ? await must(db().from("companies").update(row).eq("id", input.id).select("id").single())
+      : await must(db().from("companies").insert(row).select("id").single());
+    await audit("company", saved.id, input.id ? "updated" : "created", { name });
+    return `${name} ${input.id ? "updated" : "added to research"}`;
+  });
+}
+
+export async function addSource(companyId: string, s: { claim: string; url: string; source_date: string; confidence: string; kind: string }) {
+  return researchAction(async () => {
+    const claim = s.claim.trim().slice(0, 500);
+    const url = s.url.trim();
+    if (!claim) throw new Error("Write down what the source says.");
+    if (!/^https?:\/\/\S+$/i.test(url)) throw new Error("Every claim needs a public source URL (http/https).");
+    if (s.source_date && !/^\d{4}-\d{2}-\d{2}$/.test(s.source_date)) throw new Error("Source date must be a date.");
+    if (!["high", "medium", "low"].includes(s.confidence)) throw new Error("Pick a confidence level.");
+    if (!["history", "profile", "contact", "news"].includes(s.kind)) throw new Error("Pick what kind of source this is.");
+    const r = await must(db().from("company_sources").insert({ company_id: companyId, claim, url, source_date: s.source_date || null, confidence: s.confidence, kind: s.kind }).select("id").single());
+    await audit("company_source", r.id, "added", { companyId, url, confidence: s.confidence });
+    return "Source added";
+  });
+}
+
+export async function deleteSource(id: string) {
+  return researchAction(async () => {
+    const r = await must(db().from("company_sources").delete().eq("id", id).select("url").single());
+    await audit("company_source", id, "deleted", { url: r.url });
+    return "Source removed";
+  });
+}
+
+export async function saveFitWeights(w: Record<string, number>) {
+  return researchAction(async () => {
+    const clean = Object.fromEntries(Object.keys(DEFAULT_WEIGHTS).map((k) => [k, Math.max(0, Math.min(100, Math.round(Number(w[k]) || 0)))]));
+    if (!Object.values(clean).some((v) => v > 0)) throw new Error("At least one factor needs a weight above 0.");
+    await must(db().from("settings").upsert({ key: "fit_weights", value: clean, updated_at: new Date().toISOString() }));
+    await audit("settings", null, "fit_weights_changed", clean);
+    return "Fit weights saved";
+  });
+}
+
+/** Research proposes; the organiser decides. Adding a lead only stages it — pitches still need Review & send. */
+export async function leadFromCompany(eventId: string, companyId: string) {
+  return attempt(eventId, "sponsorship", async () => {
+    const c = await must(db().from("companies").select("id, name, contact_route, contribution_types, est_value").eq("id", companyId).single());
+    if (!c.contact_route || !EMAIL.test(c.contact_route)) throw new Error(`${c.name} has no published contact email — add one to its contact route first.`);
+    const dupe = await must(db().from("sponsors").select("id").eq("event_id", eventId).eq("company", c.name));
+    if (dupe.length) throw new Error(`${c.name} is already on this event.`);
+    const r = await must(
+      db().from("sponsors").insert({ event_id: eventId, company: c.name, contact_email: c.contact_route, company_id: c.id, contribution_type: c.contribution_types[0] ?? null, value: c.est_value }).select("id").single(),
+    );
+    await audit("sponsor", r.id, "lead_from_research", { company: c.name }, eventId);
+    return `${c.name} added as a lead — run Sponsorship to draft the pitch`;
   });
 }
 
