@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState, useTransition, type ReactNode } from "react";
 import * as act from "@/app/actions";
 import { AGENTS, agentsFor, type AgentName } from "@/lib/agents";
+import { DEMO_LEADS, DEMO_VOLUNTEERS } from "@/lib/demo";
 import { isFree, type Attendee, type EventRow, type Run, type Sponsor, type Task, type Volunteer } from "@/lib/types";
 import { BarList, LineChart, Meter, MilestoneTrack, SegmentedBar, ShiftTimeline, inr } from "./charts";
 import { Icon } from "./icons";
@@ -137,7 +138,7 @@ function useAction() {
   return [pending, go] as const;
 }
 
-function AddLines({ label, placeholder, onAdd }: { label: string; placeholder: string; onAdd: (t: string) => Promise<{ ok: boolean; message: string }> }) {
+function AddLines({ label, placeholder, onAdd, demo }: { label: string; placeholder: string; onAdd: (t: string) => Promise<{ ok: boolean; message: string }>; demo?: string }) {
   const [text, setText] = useState("");
   const [pending, go] = useAction();
   return (
@@ -152,7 +153,8 @@ function AddLines({ label, placeholder, onAdd }: { label: string; placeholder: s
           className="mt-2 w-full resize-y rounded-xl border border-d-line bg-black/30 px-3.5 py-3 font-mono text-[12.5px] leading-relaxed text-d-ink outline-none transition-colors placeholder:text-d-ink3 focus:border-white/25"
         />
       </label>
-      <div className="mt-2 flex justify-end">
+      <div className="mt-2 flex items-center justify-end gap-3">
+        {demo && <button type="button" onClick={() => setText(demo)} className="text-[12px] text-s1 hover:brightness-125">Use demo list</button>}
         <Button variant="ghost" pending={pending} disabled={!text.trim()} onClick={() => go(() => onAdd(text), () => setText(""))}>
           Add
         </Button>
@@ -749,7 +751,7 @@ function Sponsors({ event, sponsors, alumni }: Data) {
       <PastPartners eventId={event.id} alumni={alumni.filter((a) => !sponsors.some((s) => s.company === a.company))} />
 
       <Card title="Add sponsor leads" sub="One company per line — the agent drafts a pitch for each new lead">
-        <AddLines label="Company, email" placeholder="Atlassian, university@atlassian.com" onAdd={(t) => act.addLeads(event.id, t)} />
+        <AddLines label="Company, email" placeholder="Atlassian, university@atlassian.com" onAdd={(t) => act.addLeads(event.id, t)} demo={DEMO_LEADS} />
       </Card>
     </div>
   );
@@ -898,7 +900,7 @@ function Logistics({ event, volunteers, tasks }: Data) {
         sub={event.date ? `${longDate(event.date)} — hover a shift for details` : undefined}
         action={<Button variant="ghost" pending={pending} disabled={!tasks.length} onClick={() => go(() => act.emailVolunteers(event.id))}>Email volunteers their shifts</Button>}
       >
-        {tasks.length ? <div className="overflow-x-auto"><div className="min-w-[640px]"><ShiftTimeline rows={rows} /></div></div> : <Empty>Add volunteers, then run the Logistics agent.</Empty>}
+        {tasks.length ? <div className="overflow-x-auto"><div className="min-w-[640px]"><ShiftTimeline rows={rows} /></div></div> : <Empty>Add volunteers below (or use the demo list), then run the Logistics agent.</Empty>}
       </Card>
 
       <div className="grid gap-3 lg:grid-cols-[1fr_1fr]">
@@ -917,7 +919,7 @@ function Logistics({ event, volunteers, tasks }: Data) {
               </li>
             ))}
           </ul>
-          <AddLines label="Name, email, skills — one per line" placeholder="Aditi, aditi@rit.edu, av, design" onAdd={(t) => act.addVolunteers(event.id, t)} />
+          <AddLines label="Name, email, skills — one per line" placeholder="Aditi, aditi@rit.edu, av, design" onAdd={(t) => act.addVolunteers(event.id, t)} demo={DEMO_VOLUNTEERS} />
         </Card>
       </div>
     </div>

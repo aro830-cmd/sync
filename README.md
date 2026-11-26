@@ -23,6 +23,8 @@ Next.js 16 + TypeScript · Tailwind v4 + motion · Gemini · Supabase Postgres �
    | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | Supabase → Project Settings → API keys (use the **secret** key) |
    | `GMAIL_USER`, `GMAIL_APP_PASSWORD` | Google Account → Security → App passwords |
    | `ADMIN_PASSCODE` | Any password; guards `/dashboard` |
+   | `GEMINI_API_KEY_FALLBACK` (optional) | Extra Gemini keys, comma-separated, used when the main key is out of quota |
+   | `RELAY_OFFLINE` (optional) | `1` = agents never call Gemini and use offline templates (safe demo mode) |
    | `SESSION_SECRET` | Any long random string; signs student login cookies |
 
 3. New Supabase project only: run `supabase/schema.sql` in the SQL editor, then optionally `supabase/seed.sql` for the demo event (open `/dashboard/de000000-0000-4000-a000-000000000001`). For demo history (6 past + 2 upcoming events, fictional sponsors, volunteer shifts): `node --env-file=.env.local supabase/seed-history.mjs` (re-runnable).
@@ -45,6 +47,7 @@ Next.js 16 + TypeScript · Tailwind v4 + motion · Gemini · Supabase Postgres �
 npm run build && npm run lint
 node src/lib/schedule.test.ts   # volunteer scheduler self-check
 node src/lib/retry.test.ts      # Gemini retry/fallback self-check
+node src/lib/offline.test.ts    # offline-mode brief parser self-check
 ```
 
 ## Credits

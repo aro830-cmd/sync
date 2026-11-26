@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useRef, useState, useSyncExternalStore, useTransition } from "react";
 import { createEvent } from "@/app/actions";
 import { AGENTS, type AgentName } from "@/lib/agents";
+import { DEMO_LEADS, DEMO_VOLUNTEERS } from "@/lib/demo";
 import { Icon } from "./icons";
 import { Button, ease } from "./ui";
 
@@ -162,6 +163,11 @@ export function NewEvent({ initial = "" }: { initial?: string }) {
       <AnimatePresence initial={false}>
         {more && (
           <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.4, ease }} className="overflow-hidden">
+            <div className="flex justify-end px-3 pt-1">
+              <button type="button" onClick={() => (setLeads(DEMO_LEADS), setVols(DEMO_VOLUNTEERS))} className="text-[12px] text-s1 hover:brightness-125">
+                Fill with demo sponsors & volunteers
+              </button>
+            </div>
             <div className="grid gap-3 px-3 pt-2 pb-3 md:grid-cols-2">
               <label className="block">
                 <span className="mb-2 block text-[12.5px] text-d-ink2">Sponsor leads — company, email per line</span>

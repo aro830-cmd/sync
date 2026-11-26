@@ -54,16 +54,9 @@ export async function llm<T>(prompt: string): Promise<T> {
   try {
     res = await attempt();
   } catch (e) {
-    // Free-tier limits are mostly per minute: when every option is out of quota, wait once and go again.
-    if (!geminiError(e).quota) throw geminiError(e);
-    await new Promise((r) => setTimeout(r, 20_000));
-    try {
-      res = await attempt();
-    } catch (e2) {
-      const err = geminiError(e2);
-      if (err.quota) throw new Error(`Gemini is out of quota on ${keys.length === 1 ? "the API key" : `all ${keys.length} API keys`} right now. Wait a minute and run the agent again, or add another key to GEMINI_API_KEY_FALLBACK in .env.local (comma-separated).`);
-      throw err;
-    }
+    const err = geminiError(e);
+    if (err.quota) throw new Error(`Gemini is out of quota on ${keys.length === 1 ? "the API key" : `all ${keys.length} API keys`} right now.`);
+    throw err;
   }
   try {
     // Some fallback models wrap JSON in a markdown fence; strip it.

@@ -38,6 +38,7 @@ EventDesk (client) calls runAgent(event, name) for each agent IN ORDER, UI updat
 Every run is logged to `agent_runs` → activity feed + pipeline card status. Planner failure stops the chain.
 The composer picks which agents run (`?run=planner,comms`); any agent can also run alone from its page.
 **Free events:** the Planner sets `plan.kind = "free"` (seminars, talks, no budget) → budget 0, no tiers, Sponsorship skipped, report addressed to the club.
+**Offline backup:** every agent goes through `smart()` in `actions.ts` — if Gemini can't answer (quota, overload, timeout, bad JSON) the agent builds its result from `src/lib/offline.ts` (brief parser, plan templates, a pool of 16 real sponsor companies, run-of-show, announcement, report) and the run summary ends in "· offline mode". `RELAY_OFFLINE=1` in `.env.local` skips Gemini entirely for a guaranteed demo. Composer and desk have "demo" buttons that fill fictional sponsors/volunteers (`src/lib/demo.ts`).
 **Edit details:** organiser edits (brief, name, date, venue, budget, seats, funded/free) are pinned in `plan.fixed`; a Planner re-run plans around them. The edit dialog can re-run any chosen agents.
 **Voice:** the composer's mic uses the browser Web Speech API (en-IN) — hidden where unsupported.
 **Recommended sponsors:** Sponsorship asks Gemini for 8 real companies → `plan.suggestions` (no emails); the organiser adds a contact to turn one into a lead.

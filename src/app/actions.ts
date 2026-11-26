@@ -9,6 +9,7 @@ import { currentStudent, endSession, hashPassword, startSession, verifyPassword 
 import { certificatePdf } from "@/lib/pdf";
 import { buildReport, reportStats } from "@/lib/report";
 import { assign } from "@/lib/schedule";
+import { offlineComms, offlinePitch, offlinePlan, offlineReport, offlineSuggestions, offlineTasks } from "@/lib/offline";
 
 import type { AgentName } from "@/lib/agents";
 
@@ -39,6 +40,21 @@ function parseLines(text: string) {
 
 // ───────────────────────── agents ─────────────────────────
 
+/**
+ * Ask Gemini; if it can't answer (out of quota, overloaded, timed out, bad JSON) build the result offline from
+ * templates so the agent still finishes. RELAY_OFFLINE=1 skips Gemini entirely (safe demo mode).
+ */
+async function smart<T>(prompt: string, offline: () => T): Promise<{ v: T; off: boolean }> {
+  if (process.env.RELAY_OFFLINE === "1") return { v: offline(), off: true };
+  try {
+    return { v: await llm<T>(prompt), off: false };
+  } catch (e) {
+    console.error("Gemini unavailable, using offline mode:", e instanceof Error ? e.message : e);
+    return { v: offline(), off: true };
+  }
+}
+const tag = (off: boolean) => (off ? " · offline mode" : "");
+
 type Plan = {
   kind: "funded" | "free";
   name: string;
@@ -55,7 +71,7 @@ type Plan = {
 async function planner(eventId: string) {
   const ev = await getEvent(eventId);
   const fixed: Partial<Plan> = ev.plan?.fixed ?? {};
-  const p = await llm<Plan>(`You are the Planner agent for a college technical club in Bengaluru, India. Today is ${TODAY()}.
+  const { v: p, off } = await smart<Plan>(`You are the Planner agent for a college technical club in Bengaluru, India. Today is ${TODAY()}.
 Turn this one-line brief into an event plan. Brief: """${ev.brief}"""
 First decide "kind": "free" when the event needs no money and no sponsors (a seminar, talk, workshop or meetup with no budget given,
 or the brief says free / ₹0 / no budget); otherwise "funded" (hackathons, fests, anything with a budget).
@@ -65,7 +81,7 @@ Return JSON: {"kind": "funded"|"free", "name": string, "theme": string, "date": 
 "tiers": [{"name": "Title"|"Gold"|"Silver"|"Community", "amount": integer INR, "perks": [string]}] (funded: 3-4 tiers; free: []),
 "timeline": [{"date": "YYYY-MM-DD", "milestone": string}] (5-7 milestones from today to event day)}.
 If the brief omits a value, choose a sensible one.${Object.keys(fixed).length ? `
-The organiser has set these values by hand — use them exactly and plan around them: ${JSON.stringify(fixed)}` : ""}`);
+The organiser has set these values by hand — use them exactly and plan around them: ${JSON.stringify(fixed)}` : ""}`, () => offlinePlan(ev.brief, TODAY()));
   Object.assign(p, fixed); // never let the model drift from what the organiser typed
   if (!p.name || !/^\d{4}-\d{2}-\d{2}$/.test(p.date)) throw new Error("Planner returned an incomplete plan.");
   const free = p.kind === "free";
@@ -85,9 +101,9 @@ The organiser has set these values by hand — use them exactly and plan around 
       .eq("id", eventId),
   );
   return {
-    summary: free
+    summary: (free
       ? `Planned ${p.name}: free event, ${p.timeline.length} milestones — no budget or sponsors needed`
-      : `Planned ${p.name}: ${inr(p.budget)} across ${p.budget_split.length} heads, ${p.tiers.length} sponsor tiers`,
+      : `Planned ${p.name}: ${inr(p.budget)} across ${p.budget_split.length} heads, ${p.tiers.length} sponsor tiers`) + tag(off),
     output: p,
   };
 }
@@ -97,18 +113,20 @@ type Suggestion = { company: string; why: string; fit_score: number; tier: strin
 async function sponsorship(eventId: string) {
   const ev = await getEvent(eventId);
   if (ev.plan?.kind === "free") return { summary: "Skipped — free event, no sponsors needed", output: null };
-  const all = await must(db().from("sponsors").select("id, company, status").eq("event_id", eventId));
+  const all = await must(db().from("sponsors").select("id, company, status, tier, fit_score").eq("event_id", eventId));
   const leads = all.filter((s) => s.status === "lead");
 
   // Recommend real companies the club hasn't approached yet. No contact emails: the organiser adds one on accept.
   const known = new Set(all.map((s) => s.company.toLowerCase()));
-  const rec = await llm<{ suggestions: Suggestion[] }>(
+  const tiers: { name: string; amount: number; perks: string[] }[] = ev.plan?.tiers ?? [];
+  const { v: rec, off: off1 } = await smart<{ suggestions: Suggestion[] }>(
     `You are the Sponsorship agent for "${ev.name}" (${ev.theme}), on ${ev.date} at ${ev.venue}, Bengaluru, ~${ev.expected_attendees} student attendees.
 Sponsor tiers: ${JSON.stringify(ev.plan?.tiers ?? [])}
 Recommend 8 real companies that plausibly sponsor college tech events in India and fit this theme and audience
 (developer tools, cloud, startups, edtech, local tech firms). Skip these, already approached: ${JSON.stringify([...known])}.
 For each: a one-sentence reason specific to this event, a fit score 0-100, and the best-fit tier name.
 Return JSON: {"suggestions": [{"company": string, "why": string, "fit_score": integer, "tier": string}]}`,
+    () => ({ suggestions: offlineSuggestions(`${ev.brief} ${ev.name} ${ev.theme}`, tiers.map((t) => t.name), known) }),
   );
   const suggestions = (rec.suggestions ?? [])
     .filter((s) => s.company && !known.has(s.company.toLowerCase()))
@@ -116,16 +134,22 @@ Return JSON: {"suggestions": [{"company": string, "why": string, "fit_score": in
     .sort((a, b) => b.fit_score - a.fit_score)
     .slice(0, 8);
   await must(db().from("events").update({ plan: { ...ev.plan, suggestions } }).eq("id", eventId));
-  if (!leads.length) return { summary: `Recommended ${suggestions.length} sponsors — add a contact email to pitch one`, output: { suggestions } };
+  if (!leads.length) return { summary: `Recommended ${suggestions.length} sponsors — add a contact email to pitch one` + tag(off1), output: { suggestions } };
 
   // Small integer keys instead of UUIDs: the model echoes them back reliably.
-  const r = await llm<{ pitches: { n: number; tier: string; fit_score: number; subject: string; body: string }[] }>(
+  const { v: r, off: off2 } = await smart<{ pitches: { n: number; tier: string; fit_score: number; subject: string; body: string }[] }>(
     `You are the Sponsorship agent for "${ev.name}" (${ev.theme}), on ${ev.date} at ${ev.venue}, ~${ev.expected_attendees} student attendees.
 Sponsor tiers: ${JSON.stringify(ev.plan?.tiers ?? [])}
 For each company below, pick the best-fit tier, score fit 0-100 for this audience, and write a short, specific cold email
 (under 160 words, plain text, no placeholders like [Name], sign off as "Team ${ev.name}"). Mention what the company gets.
 Companies: ${JSON.stringify(leads.map((l, n) => ({ n, company: l.company })))}
 Return JSON: {"pitches": [{"n": integer (same n), "tier": string, "fit_score": integer, "subject": string, "body": string}]}`,
+    () => ({
+      pitches: leads.map((l, n) => {
+        const t = tiers.find((x) => x.name === l.tier) ?? tiers[Math.min(n, Math.max(0, tiers.length - 2))];
+        return { n, tier: t?.name ?? "Silver", fit_score: l.fit_score ?? 70, ...offlinePitch(ev, l.company, t) };
+      }),
+    }),
   );
   const pitches = (r.pitches ?? []).filter((p) => leads[p.n] && p.subject && p.body);
   for (const p of pitches) {
@@ -136,7 +160,7 @@ Return JSON: {"pitches": [{"n": integer (same n), "tier": string, "fit_score": i
         .eq("id", leads[p.n].id),
     );
   }
-  return { summary: `Drafted ${pitches.length} pitches — waiting for your approval to send · ${suggestions.length} new sponsors recommended`, output: { pitches, suggestions } };
+  return { summary: `Drafted ${pitches.length} pitches — waiting for your approval to send · ${suggestions.length} new sponsors recommended` + tag(off1 || off2), output: { pitches, suggestions } };
 }
 
 async function logistics(eventId: string) {
@@ -144,12 +168,13 @@ async function logistics(eventId: string) {
   const vols = await must(db().from("volunteers").select("id, name, skills").eq("event_id", eventId));
   if (!vols.length) return { summary: "Skipped — no volunteers yet. Add them on the Schedule tab.", output: null };
 
-  const r = await llm<{ tasks: { title: string; skill: string | null; start: string; end: string }[] }>(
+  const { v: r, off } = await smart<{ tasks: { title: string; skill: string | null; start: string; end: string }[] }>(
     `You are the Logistics agent for "${ev.name}" on ${ev.date} at ${ev.venue}, ~${ev.expected_attendees} attendees.
 Volunteers and skills: ${JSON.stringify(vols.map((v) => ({ name: v.name, skills: v.skills })))}
 Write the day's run-of-show as 8-14 volunteer tasks between 07:30 and 20:00. Some tasks should run in parallel.
 Use "skill" only when a task really needs one of the listed skills (one word, e.g. "av", "design"), else null.
 Return JSON: {"tasks": [{"title": string, "skill": string|null, "start": "HH:MM", "end": "HH:MM"}]}`,
+    () => ({ tasks: offlineTasks(vols.map((v) => v.skills)) }),
   );
   const slots = (r.tasks ?? [])
     .filter((t) => /^\d{2}:\d{2}$/.test(t.start) && /^\d{2}:\d{2}$/.test(t.end) && t.start < t.end)
@@ -164,28 +189,29 @@ Return JSON: {"tasks": [{"title": string, "skill": string|null, "start": "HH:MM"
   await must(db().from("tasks").insert(slots.map((s, i) => ({ ...s, event_id: eventId, volunteer_id: who[i] }))));
   const open = who.filter((w) => !w).length;
   return {
-    summary: `${slots.length} tasks scheduled for ${vols.length} volunteers — 0 clashes${open ? `, ${open} need more hands` : ""}`,
+    summary: `${slots.length} tasks scheduled for ${vols.length} volunteers — 0 clashes${open ? `, ${open} need more hands` : ""}` + tag(off),
     output: slots,
   };
 }
 
 async function comms(eventId: string) {
   const ev = await getEvent(eventId);
-  const r = await llm<{ announcement: string; reminder_subject: string; reminder_body: string }>(
+  const { v: r, off } = await smart<{ announcement: string; reminder_subject: string; reminder_body: string }>(
     `You are the Comms agent for "${ev.name}" (${ev.theme}) on ${ev.date} at ${ev.venue}.
 Write (1) a WhatsApp/Instagram announcement under 90 words ending with "Register: {link}",
 and (2) a reminder email for registered attendees (plain text, under 120 words, no placeholders).
 Return JSON: {"announcement": string, "reminder_subject": string, "reminder_body": string}`,
+    () => offlineComms(ev, ev.plan?.kind === "free"),
   );
   await must(db().from("events").update({ plan: { ...ev.plan, comms: r } }).eq("id", eventId));
-  return { summary: `Registration page live at /e/${eventId.slice(0, 8)}… — announcement and reminder drafted`, output: r };
+  return { summary: `Registration page live at /e/${eventId.slice(0, 8)}… — announcement and reminder drafted` + tag(off), output: r };
 }
 
 async function reporting(eventId: string) {
   const ev = await getEvent(eventId);
   const s = await reportStats(eventId);
   const free = ev.plan?.kind === "free";
-  const r = await llm<{ summary: string }>(
+  const { v: r, off } = await smart<{ summary: string }>(
     free
       ? `You are the Reporting agent. Write a 120-160 word post-event summary for the club and department of "${ev.name}" (${ev.theme}),
 held ${ev.date} at ${ev.venue}. It was a free event with no sponsors. Registered: ${s.registered}. Attended: ${s.attended}.
@@ -196,9 +222,10 @@ held ${ev.date} at ${ev.venue}. Registered: ${s.registered}. Attended: ${s.atten
 Confirmed partners: ${JSON.stringify(s.confirmed)}. Tier perks promised: ${JSON.stringify(ev.plan?.tiers ?? [])}.
 Thank partners, state the reach honestly using only these numbers, and list delivered perks. Plain prose.
 Return JSON: {"summary": string}`,
+    () => ({ summary: offlineReport(ev, s, free) }),
   );
   await must(db().from("events").update({ summary: r.summary }).eq("id", eventId));
-  return { summary: free ? `Event report ready — ${s.attended} attended of ${s.registered} registered` : `Sponsor report ready — ${s.attended} attended, ${s.confirmed.length} partners`, output: r };
+  return { summary: (free ? `Event report ready — ${s.attended} attended of ${s.registered} registered` : `Sponsor report ready — ${s.attended} attended, ${s.confirmed.length} partners`) + tag(off), output: r };
 }
 
 const RUNNERS: Record<AgentName, (id: string) => Promise<{ summary: string; output: unknown }>> = {
