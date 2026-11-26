@@ -12,6 +12,7 @@ import { assign } from "@/lib/schedule";
 import { appUrl, posterEvent, posterPng } from "@/lib/poster";
 import { DEMO_MEMBERS, joinSkills, parseSkills } from "@/lib/roster";
 import { DEFAULT_WEIGHTS } from "@/lib/fit";
+import { ROLE_WINDOWS, UNPOPULAR, suggest, type Load } from "@/lib/match";
 import { CONTRIBUTIONS, PAYMENT_STATUSES } from "@/lib/types";
 import { offlineComms, offlinePitch, offlinePlan, offlineReport, offlineSuggestions, offlineTasks } from "@/lib/offline";
 
@@ -655,6 +656,262 @@ export async function saveMetrics(eventId: string, m: { social_reach: string; ch
   });
 }
 
+// ───────────────────────── volunteer profiles, mission roles, rewards, incidents (migration 002) ─────────────────────────
+
+const SLOT = /^\d{2}:\d{2}$/;
+type ProfileInput = {
+  name: string;
+  email: string;
+  skills: string[];
+  preferred_roles: string[];
+  availability: { date?: string; weekday?: number; from: string; to: string }[];
+  available: boolean;
+  learning_goals: string;
+  reward_prefs: string[];
+  languages: string[];
+  accessibility_needs: string;
+  opted_in: boolean;
+};
+
+/** Validate and normalise a profile. Only the fields matching uses — nothing sensitive is asked or stored. */
+function cleanProfile(p: ProfileInput) {
+  const name = p.name.trim().slice(0, 100);
+  const email = p.email.trim().toLowerCase().slice(0, 200);
+  if (!name || !EMAIL.test(email)) throw new Error("Enter a name and a valid email.");
+  const list = (xs: string[], max = 12) => [...new Set(xs.map((x) => x.trim().toLowerCase()).filter(Boolean))].slice(0, max);
+  const availability = (p.availability ?? []).slice(0, 20).map((s) => {
+    if (!SLOT.test(s.from) || !SLOT.test(s.to) || s.from >= s.to) throw new Error("Each availability slot needs a start time before its end time.");
+    if (s.date && !/^\d{4}-\d{2}-\d{2}$/.test(s.date)) throw new Error("Availability dates must be dates.");
+    if (!s.date && !(Number.isInteger(s.weekday) && s.weekday! >= 0 && s.weekday! <= 6)) throw new Error("Pick a date or a weekday for each slot.");
+    return s.date ? { date: s.date, from: s.from, to: s.to } : { weekday: s.weekday, from: s.from, to: s.to };
+  });
+  const rewards = list(p.reward_prefs).filter((r) => ["certificate", "meal", "merch", "reimbursement", "recommendation", "mentor_session", "priority_access"].includes(r));
+  return {
+    name,
+    email,
+    skills: list(p.skills),
+    preferred_roles: list(p.preferred_roles),
+    availability,
+    available: !!p.available,
+    learning_goals: p.learning_goals.trim().slice(0, 300) || null,
+    reward_prefs: rewards,
+    languages: list(p.languages, 8),
+    accessibility_needs: p.accessibility_needs.trim().slice(0, 300) || null,
+    opted_in: !!p.opted_in,
+    updated_at: new Date().toISOString(),
+  };
+}
+
+async function volAction(fn: () => Promise<string>, paths = ["/dashboard/volunteers"]): Promise<Result> {
+  try {
+    await requireAdmin();
+    return { ok: true, message: await fn() };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : String(e) };
+  } finally {
+    for (const p of paths) revalidatePath(p);
+  }
+}
+
+/** Organiser edits a profile (e.g. to fix a typo). The volunteer stays in control of opt-in from the student portal. */
+export async function saveProfile(id: string | null, p: ProfileInput) {
+  return volAction(async () => {
+    const row = cleanProfile(p);
+    const r = id ? await must(db().from("volunteer_profiles").update(row).eq("id", id).select("id").single()) : await must(db().from("volunteer_profiles").insert(row).select("id").single());
+    await audit("volunteer_profile", r.id, id ? "edited_by_organiser" : "created_by_organiser", { name: row.name });
+    return `${row.name}'s profile saved`;
+  });
+}
+
+const REWARD_WORDS: [RegExp, string][] = [
+  [/certificate/i, "certificate"], [/meal/i, "meal"], [/merch|swag/i, "merch"], [/reimburse/i, "reimbursement"],
+  [/recommendation/i, "recommendation"], [/mentor/i, "mentor_session"], [/priority/i, "priority_access"],
+];
+
+/** A completed role earns the rewards its role card promises (as "promised" until the organiser marks them delivered). */
+async function promiseRewards(eventId: string, profileId: string, roleKey: string) {
+  const role = await must(db().from("roles").select("reward").eq("key", roleKey).single());
+  const kinds = REWARD_WORDS.filter(([re]) => re.test(role.reward)).map(([, k]) => k);
+  const have = new Set((await must(db().from("rewards").select("kind").eq("profile_id", profileId).eq("event_id", eventId))).map((r) => r.kind));
+  const add = kinds.filter((k) => !have.has(k)).map((kind) => ({ profile_id: profileId, event_id: eventId, kind, note: `For ${roleKey.replace(/_/g, " ")}` }));
+  if (add.length) await must(db().from("rewards").insert(add));
+}
+
+/** Run the fair matcher for every mission role that isn't filled yet. Replaces old suggestions; keeps requests and acceptances. */
+export async function suggestRoles(eventId: string) {
+  return attempt(eventId, "logistics", async () => {
+    const ev = await getEvent(eventId);
+    if (!ev.date) throw new Error("Set the event date first (run the Planner or Edit details).");
+    const since = new Date(Date.now() - 120 * 86_400_000).toISOString();
+    const [roles, profiles, mine, history] = await Promise.all([
+      must(db().from("roles").select("*").order("sort")),
+      must(db().from("volunteer_profiles").select("*")),
+      must(db().from("role_requests").select("*").eq("event_id", eventId)),
+      must(db().from("role_requests").select("profile_id, role_key").in("status", ["accepted", "completed"]).gte("updated_at", since)),
+    ]);
+    const live = mine.filter((r) => r.status !== "suggested" && r.status !== "declined");
+    const filled = new Set(live.map((r) => r.role_key));
+    const taken = new Set(live.map((r) => r.profile_id));
+    const declinedPairs = new Set(mine.filter((r) => r.status === "declined").map((r) => `${r.role_key}:${r.profile_id}`));
+    const load: Record<string, Load> = {};
+    for (const h of history) {
+      load[h.profile_id] ??= { recent: 0, unpopular: 0 };
+      load[h.profile_id].recent++;
+      if (UNPOPULAR.has(h.role_key)) load[h.profile_id].unpopular++;
+    }
+    const open = roles.filter((r) => !filled.has(r.key)).map((r) => ({ key: r.key, name: r.name, skills: r.skills, from: ROLE_WINDOWS[r.key]?.[0] ?? "09:00", to: ROLE_WINDOWS[r.key]?.[1] ?? "17:00" }));
+    const out = suggest(open, profiles, load, ev.date, taken).filter((s) => s.profileId && !declinedPairs.has(`${s.roleKey}:${s.profileId}`));
+    await must(db().from("role_requests").delete().eq("event_id", eventId).eq("status", "suggested"));
+    if (out.length) await must(db().from("role_requests").insert(out.map((s) => ({ event_id: eventId, role_key: s.roleKey, profile_id: s.profileId, status: "suggested", reason: s.reason }))));
+    await audit("role_requests", null, "suggested", { count: out.length, open: open.length }, eventId);
+    return `${out.length} of ${open.length} open roles have a suggestion — review, then send requests`;
+  });
+}
+
+export async function setRoleStatus(eventId: string, requestId: string, status: "requested" | "accepted" | "declined" | "completed") {
+  return attempt(eventId, "logistics", async () => {
+    if (!["requested", "accepted", "declined", "completed"].includes(status)) throw new Error("Unknown status.");
+    const r = await must(db().from("role_requests").update({ status, updated_at: new Date().toISOString() }).eq("id", requestId).eq("event_id", eventId).select("profile_id, role_key").single());
+    if (status === "completed") {
+      await promiseRewards(eventId, r.profile_id, r.role_key);
+      await must(db().from("volunteer_feedback").insert({ profile_id: r.profile_id, event_id: eventId, kind: "completed", note: `Completed ${r.role_key.replace(/_/g, " ")}` }));
+    }
+    await audit("role_request", requestId, status, { role: r.role_key, profile: r.profile_id }, eventId);
+    return status === "requested" ? "Request sent — it shows in their volunteer page" : `Marked ${status}`;
+  });
+}
+
+/** Organiser picks someone else. Recorded as an override so the matcher's suggestion and the human decision stay distinct. */
+export async function overrideRole(eventId: string, requestId: string, profileId: string) {
+  return attempt(eventId, "logistics", async () => {
+    const p = await must(db().from("volunteer_profiles").select("name").eq("id", profileId).single());
+    const clash = await must(db().from("role_requests").select("id").eq("event_id", eventId).eq("profile_id", profileId).neq("id", requestId).not("status", "in", "(declined,suggested)"));
+    if (clash.length) throw new Error(`${p.name} already has a role at this event.`);
+    const r = await must(db().from("role_requests").update({ profile_id: profileId, overridden: true, status: "requested", reason: `Chosen by the organiser (manual override).`, updated_at: new Date().toISOString() }).eq("id", requestId).eq("event_id", eventId).select("role_key").single());
+    await audit("role_request", requestId, "overridden", { role: r.role_key, profile: profileId }, eventId);
+    return `${p.name} requested for ${r.role_key.replace(/_/g, " ")}`;
+  });
+}
+
+export async function removeRoleRequest(eventId: string, requestId: string) {
+  return attempt(eventId, "logistics", async () => {
+    await must(db().from("role_requests").delete().eq("id", requestId).eq("event_id", eventId));
+    await audit("role_request", requestId, "removed", {}, eventId);
+    return "Removed";
+  });
+}
+
+export async function addFeedback(eventId: string, profileId: string, kind: string, note: string, visible: boolean) {
+  return attempt(eventId, "logistics", async () => {
+    if (!["completed", "no_show", "late", "kudos", "note"].includes(kind)) throw new Error("Unknown feedback type.");
+    await must(db().from("volunteer_feedback").insert({ profile_id: profileId, event_id: eventId, kind, note: note.trim().slice(0, 300) || null, visible_to_volunteer: visible }));
+    await audit("volunteer_feedback", profileId, kind, { note }, eventId);
+    return "Feedback recorded";
+  });
+}
+
+/** Mark a reliability record as wrong. It stays in history (audited) but stops counting. */
+export async function correctFeedback(id: string, corrected: boolean) {
+  return volAction(async () => {
+    const f = await must(db().from("volunteer_feedback").update({ corrected }).eq("id", id).select("event_id, kind").single());
+    await audit("volunteer_feedback", id, corrected ? "corrected" : "restored", { kind: f.kind }, f.event_id);
+    return corrected ? "Marked as corrected — it no longer counts" : "Restored";
+  });
+}
+
+export async function setRewardDelivered(id: string, delivered: boolean) {
+  return volAction(async () => {
+    const r = await must(db().from("rewards").update({ status: delivered ? "delivered" : "promised", delivered_at: delivered ? new Date().toISOString() : null }).eq("id", id).select("kind, event_id").single());
+    await audit("reward", id, delivered ? "delivered" : "undelivered", { kind: r.kind }, r.event_id);
+    return delivered ? "Reward marked delivered" : "Reward marked promised";
+  });
+}
+
+export async function addIncident(eventId: string, title: string, severity: string, note: string) {
+  return attempt(eventId, "logistics", async () => {
+    const t = title.trim().slice(0, 160);
+    if (!t) throw new Error("Describe the incident.");
+    if (!["low", "medium", "high"].includes(severity)) throw new Error("Pick a severity.");
+    const r = await must(db().from("incidents").insert({ event_id: eventId, title: t, severity, note: note.trim().slice(0, 1000) || null }).select("id").single());
+    await audit("incident", r.id, "opened", { title: t, severity }, eventId);
+    return "Incident logged";
+  });
+}
+
+export async function resolveIncident(eventId: string, id: string) {
+  return attempt(eventId, "logistics", async () => {
+    const r = await must(db().from("incidents").update({ status: "resolved", resolved_at: new Date().toISOString() }).eq("id", id).eq("event_id", eventId).select("title").single());
+    await audit("incident", id, "resolved", { title: r.title }, eventId);
+    return `Resolved: ${r.title}`;
+  });
+}
+
+// ── volunteer side (signed-in student) ──
+
+async function myProfile() {
+  const me = await currentStudent();
+  if (!me) throw new Error("Log in to your student account first.");
+  const p = await must(db().from("volunteer_profiles").select("*").eq("email", me.email).maybeSingle());
+  return { me, p };
+}
+
+async function studentAction(fn: () => Promise<string>): Promise<Result> {
+  try {
+    return { ok: true, message: await fn() };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : String(e) };
+  } finally {
+    revalidatePath("/student/volunteer");
+  }
+}
+
+/** Opt in (or update / opt out). The email always comes from the session, never from the form. */
+export async function saveMyProfile(p: Omit<ProfileInput, "name" | "email">) {
+  return studentAction(async () => {
+    const { me } = await myProfile();
+    const row = cleanProfile({ ...p, name: me.name, email: me.email });
+    await must(db().from("volunteer_profiles").upsert({ ...row, student_id: me.id }, { onConflict: "email" }));
+    return row.opted_in ? "Profile saved — organisers can now offer you roles" : "You've opted out — you won't be suggested for roles";
+  });
+}
+
+export async function applyForRole(eventId: string, roleKey: string) {
+  return studentAction(async () => {
+    const { p } = await myProfile();
+    if (!p?.opted_in) throw new Error("Opt in with your volunteer profile first.");
+    const { error } = await db().from("role_requests").insert({ event_id: eventId, role_key: roleKey, profile_id: p.id, status: "requested", reason: `Applied by ${p.name}.` });
+    if (error) throw new Error(error.code === "23505" ? "You've already applied for this role." : "Could not apply. Try again.");
+    await audit("role_request", null, "applied", { role: roleKey, profile: p.id }, eventId);
+    return "Applied — the organisers will confirm";
+  });
+}
+
+/** Accept or decline a role an organiser offered. Applications you made yourself are confirmed by the organiser instead. */
+export async function respondToRole(requestId: string, accept: boolean) {
+  return studentAction(async () => {
+    const { p } = await myProfile();
+    if (!p) throw new Error("Create your volunteer profile first.");
+    const r = await must(db().from("role_requests").select("id, status, reason, event_id, role_key").eq("id", requestId).eq("profile_id", p.id).single());
+    if (r.status !== "requested" || r.reason?.startsWith("Applied by")) throw new Error("There's nothing to respond to on this one.");
+    await must(db().from("role_requests").update({ status: accept ? "accepted" : "declined", updated_at: new Date().toISOString() }).eq("id", requestId));
+    await audit("role_request", requestId, accept ? "accepted_by_volunteer" : "declined_by_volunteer", { role: r.role_key }, r.event_id);
+    return accept ? "Accepted — see you there!" : "Declined. Thanks for letting us know.";
+  });
+}
+
+export async function confirmCompletion(requestId: string) {
+  return studentAction(async () => {
+    const { p } = await myProfile();
+    if (!p) throw new Error("Create your volunteer profile first.");
+    const r = await must(db().from("role_requests").select("id, status, event_id, role_key").eq("id", requestId).eq("profile_id", p.id).single());
+    if (r.status !== "accepted") throw new Error("Only accepted roles can be marked complete.");
+    await must(db().from("role_requests").update({ status: "completed", updated_at: new Date().toISOString() }).eq("id", requestId));
+    await promiseRewards(r.event_id, p.id, r.role_key);
+    await audit("role_request", requestId, "completed_by_volunteer", { role: r.role_key }, r.event_id);
+    return "Marked complete — your rewards are listed below";
+  });
+}
+
 export async function addVolunteers(eventId: string, text: string) {
   return attempt(eventId, "logistics", async () => {
     const v = parseLines(text);
@@ -668,6 +925,7 @@ export async function setSponsorStatus(eventId: string, id: string, status: stri
   return attempt(eventId, "sponsorship", async () => {
     if (!["contacted", "replied", "confirmed", "declined"].includes(status)) throw new Error("Bad status");
     const s = await must(db().from("sponsors").update({ status }).eq("id", id).eq("event_id", eventId).select("company").single());
+    await audit("sponsor", id, "status_changed", { company: s.company, status }, eventId);
     return `${s.company} marked ${status}`;
   });
 }
@@ -695,7 +953,7 @@ function pitchRecipient(email: string) {
   return inbox && /@([\w-]+\.)*example\.com$/i.test(email) ? inbox : email;
 }
 
-async function deliverPitch(s: { id: string; company: string; contact_email: string; pitch_subject: string; pitch_body: string }) {
+async function deliverPitch(s: { id: string; event_id: string; company: string; contact_email: string; pitch_subject: string; pitch_body: string }) {
   const to = pitchRecipient(s.contact_email);
   const demo = to !== s.contact_email;
   await sendMail({
@@ -704,6 +962,7 @@ async function deliverPitch(s: { id: string; company: string; contact_email: str
     text: demo ? `(Demo copy — this pitch is addressed to ${s.company} <${s.contact_email}>.)\n\n${s.pitch_body}` : s.pitch_body,
   });
   await must(db().from("sponsors").update({ status: "contacted" }).eq("id", s.id));
+  await audit("sponsor", s.id, "pitch_sent", { company: s.company, to }, s.event_id);
   return to;
 }
 

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Suspense } from "react";
 import { allEvents, attended, raised, type DeskEvent } from "@/lib/desk";
+import { crmReady, db } from "@/lib/server";
 import { inr } from "@/lib/format";
 import { isFree } from "@/lib/types";
 import { EventCard } from "@/components/desk/EventCard";
@@ -62,6 +63,20 @@ async function Home({ searchParams }: { searchParams: Promise<{ brief?: string }
     counts[k] = (counts[k] ?? 0) + 1;
   }
   const todo = inbox(upcoming, past, now);
+  // After migration 002: open incidents and overdue sponsor payments join the inbox, most urgent first.
+  if (await crmReady()) {
+    const today = new Date(now).toISOString().slice(0, 10);
+    const [inc, pay] = await Promise.all([
+      db().from("incidents").select("id, event_id, title, severity").eq("status", "open"),
+      db().from("sponsor_payments").select("id, label, amount, due_date, status, sponsors!inner(event_id, company)").not("status", "in", "(received,disputed)").lt("due_date", today),
+    ]);
+    const name = (id: string) => events.find((e) => e.id === id)?.name ?? "Event";
+    for (const i of inc.data ?? []) todo.unshift({ id: i.id, tone: "s1", title: `${i.severity === "high" ? "Urgent: " : ""}${i.title}`, detail: `${name(i.event_id)} · open incident`, href: `/dashboard/${i.event_id}` });
+    for (const p of pay.data ?? []) {
+      const sp = p.sponsors as unknown as { event_id: string; company: string };
+      todo.unshift({ id: p.id, tone: "s1", title: `${sp.company}: ${p.label} overdue`, detail: `${name(sp.event_id)} · due ${p.due_date}`, href: `/dashboard/${sp.event_id}?s=sponsorship` });
+    }
+  }
   const hour = new Date(now).toLocaleString("en-IN", { hour: "numeric", hour12: false, timeZone: "Asia/Kolkata" });
   const greet = +hour < 12 ? "Good morning" : +hour < 17 ? "Good afternoon" : "Good evening";
 

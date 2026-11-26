@@ -8,7 +8,8 @@ import * as act from "@/app/actions";
 import { AGENTS, agentsFor, type AgentName } from "@/lib/agents";
 import { DEMO_LEADS, DEMO_VOLUNTEERS } from "@/lib/demo";
 import { parseSkills, roleOf } from "@/lib/roster";
-import { Deals, Metrics, type Crm } from "./Deals";
+import { Deals, Metrics, effectiveStatus, type Crm } from "./Deals";
+import { AuditTrail, ConfirmButton, Incidents, MissionRoles } from "./Ops";
 import { isFree, type Attendee, type EventRow, type Run, type Sponsor, type Task, type Volunteer } from "@/lib/types";
 import { BarList, LineChart, Meter, MilestoneTrack, SegmentedBar, ShiftTimeline, inr } from "./charts";
 import { Icon } from "./icons";
@@ -401,7 +402,7 @@ function EditDetails({ event, running, onRun }: { event: EventRow; running: bool
 // ───────────── overview ─────────────
 
 function Overview({ d, state, running, onRun, onGo }: { d: Data; state: (a: AgentName) => AgentState; running: boolean; onRun: (a: AgentName[]) => void; onGo: (s: Section) => void }) {
-  const { event, sponsors, volunteers, tasks, attendees, runs } = d;
+  const { event, sponsors, volunteers, tasks, attendees, runs, crm, today } = d;
   const free = isFree(event);
   const agents = agentsFor(free);
   const notify = useToast();
@@ -485,6 +486,8 @@ function Overview({ d, state, running, onRun, onGo }: { d: Data; state: (a: Agen
         </ol>
       </div>
 
+      {crm && <Command d={d} crm={crm} today={today} onGo={onGo} />}
+
       <div className="mt-5 grid gap-3 lg:grid-cols-[1.6fr_1fr]">
         <Card title="Registrations" sub="Cumulative sign-ups since the page went live">
           <LineChart points={cumulative(attendees)} label="registered" />
@@ -509,7 +512,44 @@ function Overview({ d, state, running, onRun, onGo }: { d: Data; state: (a: Agen
           )}
         </Card>
       </div>
+      {crm && (
+        <div className="mt-5 grid gap-3 lg:grid-cols-2">
+          <Incidents event={event} crm={crm} />
+          <AuditTrail crm={crm} />
+        </div>
+      )}
     </>
+  );
+}
+
+/** Live command centre: payments, volunteer coverage, overdue items, open incidents and pending approvals at a glance. */
+function Command({ d, crm, today, onGo }: { d: Data; crm: NonNullable<Crm>; today: string; onGo: (s: Section) => void }) {
+  const committed = crm.payments.reduce((s, p) => s + p.amount, 0);
+  const received = crm.payments.reduce((s, p) => s + p.received_amount, 0);
+  const overduePay = crm.payments.filter((p) => effectiveStatus(p, today) === "overdue").length;
+  const overdueDel = crm.deliverables.filter((x) => !x.done && x.due_date && x.due_date < today).length;
+  const filled = crm.requests.filter((r) => r.status === "accepted" || r.status === "completed").length;
+  const waiting = crm.requests.filter((r) => r.status === "requested" && r.reason?.startsWith("Applied by")).length;
+  const openShifts = d.tasks.filter((t) => !t.volunteer_id).length;
+  const incidents = crm.incidents.filter((i) => i.status === "open").length;
+  const drafted = d.sponsors.filter((s) => s.status === "drafted").length;
+  const tiles: { label: string; value: string; hint: string; warn: boolean; go: Section }[] = [
+    { label: "Payments", value: committed ? `${Math.round((received / committed) * 100)}%` : "—", hint: committed ? `${inr(received)} of ${inr(committed)}${overduePay ? ` · ${overduePay} overdue` : ""}` : "No milestones yet", warn: overduePay > 0, go: "sponsorship" },
+    { label: "Mission roles", value: `${filled}/${crm.roles.length}`, hint: `${openShifts ? `${openShifts} open shifts · ` : ""}${waiting} application${waiting === 1 ? "" : "s"} waiting`, warn: waiting > 0 || openShifts > 0, go: "logistics" },
+    { label: "Overdue", value: String(overduePay + overdueDel), hint: `${overduePay} payments · ${overdueDel} deliverables`, warn: overduePay + overdueDel > 0, go: "sponsorship" },
+    { label: "Pending approvals", value: String(drafted + waiting), hint: `${drafted} pitches · ${waiting} role applications`, warn: drafted + waiting > 0, go: drafted ? "sponsorship" : "logistics" },
+    { label: "Open incidents", value: String(incidents), hint: incidents ? "Resolve them below" : "All clear", warn: incidents > 0, go: "overview" },
+  ];
+  return (
+    <div className="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-5">
+      {tiles.map((t) => (
+        <button key={t.label} onClick={() => t.go !== "overview" && onGo(t.go)} className={`rounded-2xl border bg-d-panel p-4 text-left transition-colors hover:border-white/20 ${t.warn ? "border-s1/40" : "border-d-line"}`}>
+          <div className="flex items-center gap-2 text-[12px] text-d-ink2"><span className={`size-1.5 rounded-full ${t.warn ? "bg-s1" : "bg-good"}`} />{t.label}</div>
+          <div className="mt-2 text-[22px] leading-none font-semibold tabular-nums">{t.value}</div>
+          <div className="mt-1.5 text-[11.5px] text-d-ink3">{t.hint}</div>
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -775,9 +815,9 @@ function Review({ eventId, drafts, tierAmt, demoInbox }: { eventId: string; draf
       title={`Review & send · ${drafts.length} pitch${drafts.length === 1 ? "" : "es"} waiting`}
       sub="Written by the Sponsorship agent. Read each one, edit anything, then send — nothing goes out until you click."
       action={
-        <Button variant="accent" pending={pending} onClick={() => go(() => act.sendPitches(eventId))}>
+        <ConfirmButton pending={pending} confirm={`Email all ${drafts.length} sponsors now?`} onConfirm={() => go(() => act.sendPitches(eventId))}>
           Approve & send all {drafts.length}
-        </Button>
+        </ConfirmButton>
       }
     >
       <div className="grid gap-3 lg:grid-cols-[240px_1fr]">
@@ -928,7 +968,7 @@ function Pitch({ eventId, s, onClose, hideClose }: { eventId: string; s: Sponsor
 
 // ───────────── 03 logistics ─────────────
 
-function Logistics({ event, volunteers, tasks }: Data) {
+function Logistics({ event, volunteers, tasks, crm }: Data) {
   const [pending, go] = useAction();
   const open = tasks.filter((t) => !t.volunteer_id);
   const hours = tasks.reduce((s, t) => s + hrs(t), 0);
@@ -955,10 +995,12 @@ function Logistics({ event, volunteers, tasks }: Data) {
       <Card
         title="Run of show"
         sub={event.date ? `${longDate(event.date)} — hover a shift for details` : undefined}
-        action={<Button variant="ghost" pending={pending} disabled={!tasks.length} onClick={() => go(() => act.emailVolunteers(event.id))}>Email volunteers their shifts</Button>}
+        action={<ConfirmButton variant="ghost" pending={pending} disabled={!tasks.length} confirm={`Email ${volunteers.length} volunteers?`} onConfirm={() => go(() => act.emailVolunteers(event.id))}>Email volunteers their shifts</ConfirmButton>}
       >
         {tasks.length ? <div className="overflow-x-auto"><div className="min-w-[640px]"><ShiftTimeline rows={rows} /></div></div> : <Empty>Add volunteers below (or use the demo list), then run the Logistics agent.</Empty>}
       </Card>
+
+      {crm && <MissionRoles event={event} crm={crm} />}
 
       <Roles volunteers={volunteers} tasks={tasks} />
 
@@ -1083,8 +1125,8 @@ function Comms({ event, attendees, invitable, studentInbox }: Data) {
         sub="Tick people in at the door. Certificates go to everyone checked in."
         action={
           <div className="flex gap-2">
-            <Button variant="ghost" pending={pending} disabled={!attendees.length || !comms} onClick={() => go(() => act.sendReminders(event.id))}>Send reminder</Button>
-            <Button variant="accent" pending={pending} disabled={!checked} onClick={() => go(() => act.sendCertificates(event.id))}>Email certificates</Button>
+            <ConfirmButton variant="ghost" pending={pending} disabled={!attendees.length || !comms} confirm={`Email ${attendees.length} attendees?`} onConfirm={() => go(() => act.sendReminders(event.id))}>Send reminder</ConfirmButton>
+            <ConfirmButton pending={pending} disabled={!checked} confirm="Email certificates to everyone checked in?" onConfirm={() => go(() => act.sendCertificates(event.id))}>Email certificates</ConfirmButton>
           </div>
         }
       >
@@ -1227,9 +1269,9 @@ function ReportingBody({ event, attendees, sponsors }: Pick<Data, "event" | "att
                 Open report PDF
               </a>
               {!free && (
-                <Button variant="accent" pending={pending} disabled={!event.summary || !confirmed.length} onClick={() => go(() => act.sendReport(event.id))}>
+                <ConfirmButton pending={pending} disabled={!event.summary || !confirmed.length} confirm={`Email the report to ${confirmed.length} partners?`} onConfirm={() => go(() => act.sendReport(event.id))}>
                   Email report to {confirmed.length} partner{confirmed.length === 1 ? "" : "s"}
-                </Button>
+                </ConfirmButton>
               )}
             </div>
           </Card>

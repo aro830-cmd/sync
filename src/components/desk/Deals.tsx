@@ -5,10 +5,18 @@ import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import * as act from "@/app/actions";
 import { inr } from "@/lib/format";
-import { CONTRIBUTIONS, PAYMENT_STATUSES, type Deliverable, type EventRow, type Sponsor, type SponsorPayment } from "@/lib/types";
+import { CONTRIBUTIONS, PAYMENT_STATUSES, type AuditEntry, type Deliverable, type EventRow, type Incident, type MissionRole, type RoleRequest, type Sponsor, type SponsorPayment } from "@/lib/types";
 import { Button, Card, Empty, ease, useToast } from "./ui";
 
-export type Crm = { payments: SponsorPayment[]; deliverables: Deliverable[] } | null;
+export type Crm = {
+  payments: SponsorPayment[];
+  deliverables: Deliverable[];
+  roles: MissionRole[];
+  requests: RoleRequest[];
+  profiles: { id: string; name: string; email: string; skills: string[]; preferred_roles: string[]; opted_in: boolean; available: boolean }[];
+  incidents: Incident[];
+  audit: AuditEntry[];
+} | null;
 
 const field = "h-9 w-full min-w-0 rounded-lg border border-d-line bg-black/30 px-3 text-[13px] text-d-ink outline-none transition-colors placeholder:text-d-ink3 focus:border-white/25";
 const TERMS: [string, string, string][] = [

@@ -18,15 +18,29 @@ function alumni(rows: Alum[]) {
   return [...by.values()].sort((a, b) => b.times - a.times);
 }
 
-/** Payments and deliverables for this event's sponsors, or null until migration 002 has run. */
-async function crm(sponsorIds: string[]) {
+/** Deals, mission roles, incidents and the audit trail for this event, or null until migration 002 has run. */
+async function crm(eventId: string, sponsorIds: string[]) {
   if (!(await crmReady())) return null;
   const ids = sponsorIds.length ? sponsorIds : ["00000000-0000-0000-0000-000000000000"];
-  const [p, d] = await Promise.all([
-    db().from("sponsor_payments").select("*").in("sponsor_id", ids).order("due_date"),
-    db().from("sponsor_deliverables").select("*").in("sponsor_id", ids).order("due_date"),
+  const d = db();
+  const [p, del, roles, reqs, profiles, inc, log] = await Promise.all([
+    d.from("sponsor_payments").select("*").in("sponsor_id", ids).order("due_date"),
+    d.from("sponsor_deliverables").select("*").in("sponsor_id", ids).order("due_date"),
+    d.from("roles").select("*").order("sort"),
+    d.from("role_requests").select("*").eq("event_id", eventId).order("created_at"),
+    d.from("volunteer_profiles").select("id, name, email, skills, preferred_roles, opted_in, available"),
+    d.from("incidents").select("*").eq("event_id", eventId).order("created_at", { ascending: false }),
+    d.from("audit_log").select("*").eq("event_id", eventId).order("created_at", { ascending: false }).limit(25),
   ]);
-  return { payments: p.data ?? [], deliverables: d.data ?? [] };
+  return {
+    payments: p.data ?? [],
+    deliverables: del.data ?? [],
+    roles: roles.data ?? [],
+    requests: reqs.data ?? [],
+    profiles: profiles.data ?? [],
+    incidents: inc.data ?? [],
+    audit: log.data ?? [],
+  };
 }
 
 async function Desk({ params }: { params: Promise<{ id: string }> }) {
@@ -62,7 +76,7 @@ async function Desk({ params }: { params: Promise<{ id: string }> }) {
       // Students who could still be invited (have an account, not registered yet).
       invitable: students.data!.filter((s) => !attendees.data!.some((a) => a.email === s.email)).length,
       studentInbox: process.env.DEMO_STUDENT_INBOX?.trim() || null,
-      crm: await crm(sponsors.data!.map((s) => s.id)),
+      crm: await crm(id, sponsors.data!.map((s) => s.id)),
       today: new Date().toISOString().slice(0, 10),
     };
   } catch (e) {

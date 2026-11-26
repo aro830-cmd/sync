@@ -1,6 +1,8 @@
 import { Suspense } from "react";
 import { connection } from "next/server";
-import { db } from "@/lib/server";
+import { crmReady, db } from "@/lib/server";
+import type { MissionRole, VolunteerProfile } from "@/lib/types";
+import { Profiles, type FeedbackRow, type RewardRow } from "@/components/desk/Profiles";
 import { ROLES, parseSkills } from "@/lib/roster";
 import { BarList } from "@/components/desk/charts";
 import { CountUp } from "@/components/desk/fx";
@@ -10,8 +12,44 @@ import { SetupNotice } from "@/components/desk/SetupNotice";
 import { Shell } from "@/components/desk/shell";
 import { Card } from "@/components/desk/ui";
 
+/** After migration 002: opt-in profiles, mission roles, feedback and the reward tracker. */
+async function ProfilesPage() {
+  const d = db();
+  const [profiles, roles, feedback, rewards, done, events] = await Promise.all([
+    d.from("volunteer_profiles").select("*").order("name"),
+    d.from("roles").select("*").order("sort"),
+    d.from("volunteer_feedback").select("*").order("created_at", { ascending: false }),
+    d.from("rewards").select("*").order("created_at", { ascending: false }),
+    d.from("role_requests").select("profile_id").eq("status", "completed"),
+    d.from("events").select("id, name"),
+  ]);
+  const err = [profiles, roles, feedback, rewards, done, events].find((r) => r.error)?.error;
+  if (err) return <SetupNotice message={err.message} />;
+  const ev = new Map(events.data!.map((e) => [e.id, e.name as string | null]));
+  const who = new Map(profiles.data!.map((p) => [p.id, p.name as string]));
+  const completed: Record<string, number> = {};
+  for (const r of done.data!) completed[r.profile_id] = (completed[r.profile_id] ?? 0) + 1;
+  return (
+    <>
+      <div className="mb-8">
+        <div className="text-[12.5px] text-d-ink3">Volunteers</div>
+        <h1 className="mt-2 text-[clamp(1.9rem,3.6vw,2.7rem)] leading-[1.05] font-semibold tracking-[-0.03em]">Volunteers & roles</h1>
+        <p className="mt-2 max-w-2xl text-[14px] text-d-ink2">Profiles are opt-in and filled in by volunteers themselves. Matching uses only skills, chosen roles, availability and goals — never personal attributes — and every suggestion explains itself on the event&apos;s Logistics page.</p>
+      </div>
+      <Profiles
+        profiles={profiles.data as VolunteerProfile[]}
+        roles={roles.data as MissionRole[]}
+        feedback={(feedback.data ?? []).map((f) => ({ ...f, event: f.event_id ? ev.get(f.event_id) ?? null : null })) as FeedbackRow[]}
+        rewards={(rewards.data ?? []).map((r) => ({ ...r, name: who.get(r.profile_id) ?? "Volunteer", event: r.event_id ? ev.get(r.event_id) ?? null : null })) as RewardRow[]}
+        completed={completed}
+      />
+    </>
+  );
+}
+
 async function Page() {
   await connection();
+  if (await crmReady()) return <ProfilesPage />;
   let members: Member[];
   try {
     const d = db();

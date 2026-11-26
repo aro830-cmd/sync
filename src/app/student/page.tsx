@@ -90,7 +90,7 @@ async function Portal() {
 
       {/* in-page tabs */}
       <nav className="sticky top-0 z-10 -mx-6 mt-10 flex gap-1 overflow-x-auto bg-paper/85 px-6 py-3 backdrop-blur [scrollbar-width:none]">
-        {[["#upcoming", "Upcoming"], ["#past", "Past events"], ["#certificates", "My certificates"]].map(([h, l]) => (
+        {[["#upcoming", "Upcoming"], ["#past", "Past events"], ["#certificates", "My certificates"], ["/student/volunteer", "Volunteer →"]].map(([h, l]) => (
           <a key={h} href={h} className="shrink-0 rounded-full border border-line px-4 py-1.5 text-[13px] text-ink-2 transition-colors hover:border-ink hover:text-ink">{l}</a>
         ))}
       </nav>
