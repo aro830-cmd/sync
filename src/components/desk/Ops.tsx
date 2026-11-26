@@ -144,12 +144,12 @@ export function Incidents({ event, crm }: { event: EventRow; crm: NonNullable<Cr
       ) : (
         <p className="mb-3 text-[12.5px] text-d-ink3">Nothing logged.</p>
       )}
-      <form className="grid gap-2 sm:grid-cols-[1.5fr_auto_1.5fr_auto]" onSubmit={(e) => (e.preventDefault(), run(() => act.addIncident(event.id, f.title, f.severity, f.note), () => setF({ title: "", severity: "medium", note: "" })))}>
-        <input value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} placeholder="What happened" aria-label="Incident" className="h-9 rounded-lg border border-d-line bg-black/30 px-3 text-[13px] outline-none focus:border-white/25" />
-        <select value={f.severity} onChange={(e) => setF({ ...f, severity: e.target.value })} aria-label="Severity" className="h-9 rounded-lg border border-d-line bg-black/30 px-2 text-[13px]">
+      <form className="flex flex-wrap gap-2" onSubmit={(e) => (e.preventDefault(), run(() => act.addIncident(event.id, f.title, f.severity, f.note), () => setF({ title: "", severity: "medium", note: "" })))}>
+        <input value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} placeholder="What happened" aria-label="Incident" className="h-9 min-w-0 flex-[2_1_12rem] rounded-lg border border-d-line bg-black/30 px-3 text-[13px] outline-none focus:border-white/25" />
+        <select value={f.severity} onChange={(e) => setF({ ...f, severity: e.target.value })} aria-label="Severity" className="h-9 shrink-0 rounded-lg border border-d-line bg-black/30 px-2 text-[13px]">
           {["low", "medium", "high"].map((s) => <option key={s} className="bg-d-raise">{s}</option>)}
         </select>
-        <input value={f.note} onChange={(e) => setF({ ...f, note: e.target.value })} placeholder="Note (optional)" aria-label="Note" className="h-9 rounded-lg border border-d-line bg-black/30 px-3 text-[13px] outline-none focus:border-white/25" />
+        <input value={f.note} onChange={(e) => setF({ ...f, note: e.target.value })} placeholder="Note (optional)" aria-label="Note" className="h-9 min-w-0 flex-[2_1_10rem] rounded-lg border border-d-line bg-black/30 px-3 text-[13px] outline-none focus:border-white/25" />
         <Button pending={pending} disabled={!f.title.trim()}>Log</Button>
       </form>
     </Card>

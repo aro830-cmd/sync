@@ -13,6 +13,7 @@ export type EventRow = {
     kind?: "funded" | "free";
     suggestions?: { company: string; why: string; fit_score: number; tier: string }[];
     metrics?: { social_reach: number | null; challenge_participants: number | null; photos: string[] };
+    pitch?: { why: string; appeal: string[]; trigger: string; disruption: string[]; generated_at: string; offline: boolean };
     budget_split?: { head: string; amount: number }[];
     tiers?: { name: string; amount: number; perks: string[] }[];
     timeline?: { date: string; milestone: string }[];

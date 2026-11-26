@@ -22,7 +22,7 @@ import { Button, Card, Empty, Label, Stat, ToastProvider, ease, useToast } from 
 type Alum = { company: string; email: string; tier: string | null; event: string; times: number };
 type Data = { event: EventRow; sponsors: Sponsor[]; volunteers: Volunteer[]; tasks: Task[]; attendees: Attendee[]; runs: Run[]; alumni: Alum[]; demoInbox: string | null; invitable: number; studentInbox: string | null; crm: Crm; today: string; events: { id: string; name: string | null; date: string | null }[]; decisions: Decision[]; decisionLog: DecisionLog[]; saved: number };
 type Live = Partial<Record<AgentName, "running" | "done" | "failed">>;
-type Section = "overview" | AgentName | "reroute" | "decisions" | "audit";
+type Section = "overview" | "pitch" | AgentName | "reroute" | "decisions" | "audit";
 type AgentState = "idle" | "running" | "done" | "failed";
 
 const ago = (iso: string) => {
@@ -51,7 +51,7 @@ function Desk(d: Data) {
   // ?s=<agent> deep-links straight to an agent page (from the home inbox and the agent pages).
   const [section, setSection] = useState<Section>(() => {
     const s = params.get("s");
-    return s === "reroute" || s === "decisions" || s === "audit" || agents.some((a) => a.id === s) ? (s as Section) : "overview";
+    return s === "pitch" || s === "reroute" || s === "decisions" || s === "audit" || agents.some((a) => a.id === s) ? (s as Section) : "overview";
   });
   const [live, setLive] = useState<Live>({});
   const [running, setRunning] = useState(false);
@@ -115,6 +115,7 @@ function Desk(d: Data) {
         {
           items: [
             { key: "overview", label: "Overview", icon: Icon.overview, active: section === "overview", onClick: () => go("overview") },
+            { key: "pitch", label: "Pitch", icon: Icon.spark, active: section === "pitch", onClick: () => go("pitch") },
             { key: "reroute", label: "Chaos Re-Router", icon: Icon.reroute, active: section === "reroute", onClick: () => go("reroute"), dot: "bg-crit" },
             {
               key: "decisions",
@@ -135,7 +136,9 @@ function Desk(d: Data) {
     >
       <AnimatePresence mode="wait">
         <motion.div key={section} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: 0.28, ease }}>
-          {section === "overview" ? (
+          {section === "pitch" ? (
+            <EventPitch event={event} />
+          ) : section === "overview" ? (
             <Overview d={d} state={state} running={running} onRun={run} onGo={go} />
           ) : section === "decisions" ? (
             <DecisionsPage />
@@ -264,6 +267,46 @@ function NextStep({ step, busy, onRun, onGo }: { step: Step; busy: boolean; onRu
         </Button>
       </div>
     </motion.div>
+  );
+}
+
+// ───────────── pitch ─────────────
+
+/** The Why?, Appeal, Trigger, Disruption — this event's pitch, for presenting it. */
+function EventPitch({ event }: { event: EventRow }) {
+  const [pending, go] = useAction();
+  const p = event.plan?.pitch;
+  const blocks: [string, string, ReactNode][] = p
+    ? [
+        ["01", "The Why?", <p key="w" className="text-[15px] leading-relaxed text-d-ink2">{p.why}</p>],
+        ["02", "Appeal", <ul key="a" className="space-y-2">{p.appeal.map((x) => <li key={x} className="flex gap-2 text-[14.5px] text-d-ink2"><span className="text-s1">✦</span>{x}</li>)}</ul>],
+        ["03", "Trigger", <p key="t" className="text-[15px] leading-relaxed text-d-ink2">{p.trigger}</p>],
+        ["04", "Disruption", <ul key="d" className="space-y-2">{p.disruption.map((x) => <li key={x} className="flex gap-2 text-[14.5px] text-d-ink2"><span className="text-s1">→</span>{x}</li>)}</ul>],
+      ]
+    : [];
+  return (
+    <>
+      <PageHead
+        eyebrow={<>Pitch{p ? ` · written ${new Date(p.generated_at).toLocaleDateString("en-IN")}${p.offline ? " · offline mode" : ""}` : ""}</>}
+        title={event.name ? `Why ${event.name}?` : "Pitch"}
+        sub="The Why?, Appeal, Trigger and Disruption for this event — use it on stage, in the announcement or with sponsors."
+        actions={<Button variant="accent" pending={pending} onClick={() => go(() => act.generatePitch(event.id))}>{p ? "Rewrite pitch" : "Write pitch"}</Button>}
+      />
+      {p ? (
+        <div className="grid gap-3 md:grid-cols-2">
+          {blocks.map(([n, h, body], i) => (
+            <motion.section key={h} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.4, ease, delay: i * 0.08 }} className="relative overflow-hidden rounded-2xl border border-s1/25 bg-d-panel p-6">
+              <span aria-hidden className="pointer-events-none absolute -top-6 -right-2 text-[88px] leading-none font-black text-s1/10">{n}</span>
+              <div className="text-[11px] font-medium tracking-[0.12em] text-s1 uppercase">{n} / {h}</div>
+              <h2 className="mt-2 mb-4 text-[22px] font-semibold tracking-[-0.02em]">{h}</h2>
+              {body}
+            </motion.section>
+          ))}
+        </div>
+      ) : (
+        <Empty>Press “Write pitch” — it&apos;s built from this event&apos;s plan, partners and numbers.</Empty>
+      )}
+    </>
   );
 }
 
@@ -410,6 +453,7 @@ function EditDetails({ event, running, onRun }: { event: EventRow; running: bool
               </div>
 
               <div className="mt-6 flex flex-wrap justify-end gap-2">
+                <span className="mr-auto"><ConfirmButton variant="ghost" confirm="Delete this event and everything in it?" onConfirm={() => act.deleteEvent(event.id)}>Delete event</ConfirmButton></span>
                 <Button variant="ghost" onClick={() => setOpen(false)}>Cancel</Button>
                 <Button variant="ghost" pending={pending} onClick={() => save(false)}>Save only</Button>
                 <Button variant="accent" pending={pending} disabled={!list.length} onClick={() => save(true)}>
@@ -845,7 +889,7 @@ function Sponsors({ event, sponsors, alumni, demoInbox, crm, today }: Data) {
 
       <Deals event={event} sponsors={sponsors} crm={crm} today={today} />
 
-      <Suggestions event={event} />
+      <Suggestions event={event} demoInbox={demoInbox} />
       <PastPartners eventId={event.id} alumni={alumni.filter((a) => !sponsors.some((s) => s.company === a.company))} />
 
       <Card title="Add sponsor leads" sub="One company per line — the agent drafts a pitch for each new lead">
@@ -861,7 +905,7 @@ function Review({ eventId, drafts, tierAmt, demoInbox }: { eventId: string; draf
   const [i, setI] = useState(0);
   if (!drafts.length) return null;
   const s = drafts[Math.min(i, drafts.length - 1)];
-  const demo = !!demoInbox && /@([\w-]+\.)*example\.com$/i.test(s.contact_email);
+  const demo = !!demoInbox && (s.contact_email === demoInbox || /@([\w-]+\.)*example\.com$/i.test(s.contact_email));
   return (
     <Card
       title={`Review & send · ${drafts.length} pitch${drafts.length === 1 ? "" : "es"} waiting`}
@@ -929,14 +973,14 @@ function PastPartners({ eventId, alumni }: { eventId: string; alumni: Alum[] }) 
 }
 
 /** Real companies the agent recommended. Accepting one needs a contact email; then it's an ordinary lead. */
-function Suggestions({ event }: { event: EventRow }) {
+function Suggestions({ event, demoInbox }: { event: EventRow; demoInbox: string | null }) {
   const list = event.plan?.suggestions ?? [];
   return (
-    <Card title="Recommended by the agent" sub={list.length ? "Real companies that fit this event. Add a contact email to turn one into a lead." : undefined}>
+    <Card title="Recommended by the agent" sub={list.length ? `Real companies that fit this event. "Draft email" writes the pitch${demoInbox ? ` — addressed to your demo inbox ${demoInbox}` : ""}; you review it before anything is sent.` : undefined}>
       {list.length ? (
         <ul className="grid gap-2 md:grid-cols-2">
           <AnimatePresence initial={false}>
-            {list.map((s, i) => <Suggestion key={s.company} eventId={event.id} s={s} i={i} />)}
+            {list.map((s, i) => <Suggestion key={s.company} eventId={event.id} s={s} i={i} demoInbox={demoInbox} />)}
           </AnimatePresence>
         </ul>
       ) : (
@@ -946,8 +990,8 @@ function Suggestions({ event }: { event: EventRow }) {
   );
 }
 
-function Suggestion({ eventId, s, i }: { eventId: string; s: NonNullable<NonNullable<EventRow["plan"]>["suggestions"]>[number]; i: number }) {
-  const [email, setEmail] = useState("");
+function Suggestion({ eventId, s, i, demoInbox }: { eventId: string; s: NonNullable<NonNullable<EventRow["plan"]>["suggestions"]>[number]; i: number; demoInbox: string | null }) {
+  const [email, setEmail] = useState(demoInbox ?? "");
   const [open, setOpen] = useState(false);
   const [pending, go] = useAction();
   return (
@@ -968,12 +1012,12 @@ function Suggestion({ eventId, s, i }: { eventId: string; s: NonNullable<NonNull
         <form className="mt-3 flex gap-2" onSubmit={(e) => (e.preventDefault(), go(() => act.acceptSuggestion(eventId, s.company, email)))}>
           <input autoFocus type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder={`partnerships@${s.company.split(" ")[0].toLowerCase()}.com`} aria-label={`Contact email for ${s.company}`}
             className="h-9 min-w-0 flex-1 rounded-lg border border-d-line bg-black/30 px-3 text-[13px] text-d-ink outline-none placeholder:text-d-ink3 focus:border-white/25" />
-          <Button pending={pending} disabled={!email}>Add lead</Button>
+          <Button pending={pending} disabled={!email}>{pending ? "Drafting…" : "Draft email"}</Button>
         </form>
       ) : (
         <div className="mt-3 flex justify-end gap-1.5">
           <button disabled={pending} onClick={() => go(() => act.dismissSuggestion(eventId, s.company))} className="rounded-md px-2 py-1 text-[12px] text-d-ink3 transition-colors hover:text-d-ink">Dismiss</button>
-          <button onClick={() => setOpen(true)} className="rounded-md border border-d-line px-2.5 py-1 text-[12px] text-d-ink transition-colors hover:border-s1/50 hover:bg-s1/10">+ Add contact</button>
+          <button onClick={() => setOpen(true)} className="rounded-md border border-s1/50 bg-s1/10 px-2.5 py-1 text-[12px] text-d-ink transition-colors hover:bg-s1/20">Draft email →</button>
         </div>
       )}
     </motion.li>

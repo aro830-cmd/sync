@@ -5,6 +5,7 @@ import { inr } from "@/lib/format";
 import { isFree } from "@/lib/types";
 import { BarList } from "@/components/desk/charts";
 import { CountUp, PairBars } from "@/components/desk/fx";
+import { ReportsButton } from "@/components/desk/ReportsButton";
 import { homeNav } from "@/components/desk/nav";
 import { SetupNotice } from "@/components/desk/SetupNotice";
 import { Shell } from "@/components/desk/shell";
@@ -73,7 +74,7 @@ async function Past() {
             </Card>
           </div>
 
-          <Card title="All past events" sub={`${past.length} events, newest first`} className="mt-3">
+          <Card title="All past events" sub={`${past.length} events, newest first · the Reporting agent writes each report after the day`} action={<ReportsButton missing={past.filter((e) => !e.summary).length} />} className="mt-3">
             <div className="-mx-5 overflow-x-auto px-5">
               <table className="w-full min-w-[760px] text-left text-[13px]">
                 <thead className="text-[11px] uppercase tracking-[0.08em] text-d-ink3">

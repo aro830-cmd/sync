@@ -106,6 +106,11 @@ The organiser has set these values by hand — use them exactly and plan around 
   Object.assign(p, fixed); // never let the model drift from what the organiser typed
   if (!p.name || !/^\d{4}-\d{2}-\d{2}$/.test(p.date)) throw new Error("Planner returned an incomplete plan.");
   const free = p.kind === "free";
+  // Same-name events confuse everyone (two "AI-Innovate 2026" cards): add a number if the name is taken.
+  if (!fixed.name) {
+    const same = await must(db().from("events").select("id").neq("id", eventId).ilike("name", p.name));
+    if (same.length) p.name = `${p.name} #${same.length + 1}`;
+  }
   await must(
     db()
       .from("events")
@@ -149,32 +154,9 @@ The organiser has set these values by hand — use them exactly and plan around 
 
 type Suggestion = { company: string; why: string; fit_score: number; tier: string };
 
-async function sponsorship(eventId: string) {
-  const ev = await getEvent(eventId);
-  if (ev.plan?.kind === "free") return { summary: "Skipped — free event, no sponsors needed", output: null };
-  const all = await must(db().from("sponsors").select("id, company, status, tier, fit_score").eq("event_id", eventId));
-  const leads = all.filter((s) => s.status === "lead");
-
-  // Recommend real companies the club hasn't approached yet. No contact emails: the organiser adds one on accept.
-  const known = new Set(all.map((s) => s.company.toLowerCase()));
+/** Write a funding-request email for each lead and mark it drafted. Used by the agent and by "Draft email" on a recommendation. */
+async function draftPitches(ev: Awaited<ReturnType<typeof getEvent>>, leads: { id: string; company: string; tier: string | null; fit_score: number | null }[]) {
   const tiers: { name: string; amount: number; perks: string[] }[] = ev.plan?.tiers ?? [];
-  const { v: rec, off: off1 } = await smart<{ suggestions: Suggestion[] }>(
-    `You are the Sponsorship agent for "${ev.name}" (${ev.theme}), on ${ev.date} at ${ev.venue}, Bengaluru, ~${ev.expected_attendees} student attendees.
-Sponsor tiers: ${JSON.stringify(ev.plan?.tiers ?? [])}
-Recommend 8 real companies that plausibly sponsor college tech events in India and fit this theme and audience
-(developer tools, cloud, startups, edtech, local tech firms). Skip these, already approached: ${JSON.stringify([...known])}.
-For each: a one-sentence reason specific to this event, a fit score 0-100, and the best-fit tier name.
-Return JSON: {"suggestions": [{"company": string, "why": string, "fit_score": integer, "tier": string}]}`,
-    () => ({ suggestions: offlineSuggestions(`${ev.brief} ${ev.name} ${ev.theme}`, tiers.map((t) => t.name), known) }),
-  );
-  const suggestions = (rec.suggestions ?? [])
-    .filter((s) => s.company && !known.has(s.company.toLowerCase()))
-    .map((s) => ({ ...s, fit_score: Math.round(s.fit_score) }))
-    .sort((a, b) => b.fit_score - a.fit_score)
-    .slice(0, 8);
-  await must(db().from("events").update({ plan: { ...ev.plan, suggestions } }).eq("id", eventId));
-  if (!leads.length) return { summary: `Recommended ${suggestions.length} sponsors — add a contact email to pitch one` + tag(off1), output: { suggestions } };
-
   // Small integer keys instead of UUIDs: the model echoes them back reliably.
   const { v: r, off: off2 } = await smart<{ pitches: { n: number; tier: string; fit_score: number; why?: string; subject: string; body: string }[] }>(
     `You are the Sponsorship agent for "${ev.name}" (${ev.theme}), on ${ev.date} at ${ev.venue}, ~${ev.expected_attendees} student attendees.
@@ -206,7 +188,7 @@ Return JSON: {"pitches": [{"n": integer (same n), "tier": string, "fit_score": i
         .eq("id", leads[p.n].id),
     );
   }
-  await record(eventId, pitches.map((p) => {
+  await record(ev.id, pitches.map((p) => {
     const t = tiers.find((x) => x.name === p.tier);
     const score = Math.round(p.fit_score);
     return {
@@ -226,7 +208,45 @@ Return JSON: {"pitches": [{"n": integer (same n), "tier": string, "fit_score": i
       },
     };
   }));
-  return { summary: `Drafted ${pitches.length} pitches — waiting for your approval to send · ${suggestions.length} new sponsors recommended` + tag(off1 || off2), output: { pitches, suggestions } };
+  return { count: pitches.length, off: off2 };
+}
+
+async function sponsorship(eventId: string) {
+  const ev = await getEvent(eventId);
+  if (ev.plan?.kind === "free") return { summary: "Skipped — free event, no sponsors needed", output: null };
+  const all = await must(db().from("sponsors").select("id, company, status, tier, fit_score").eq("event_id", eventId));
+  const leads = all.filter((s) => s.status === "lead");
+
+  // Recommend real companies the club hasn't approached yet. No contact emails: the organiser adds one on accept.
+  const known = new Set(all.map((s) => s.company.toLowerCase()));
+  const tiers: { name: string; amount: number; perks: string[] }[] = ev.plan?.tiers ?? [];
+  const { v: rec, off: off1 } = await smart<{ suggestions: Suggestion[] }>(
+    `You are the Sponsorship agent for "${ev.name}" (${ev.theme}), on ${ev.date} at ${ev.venue}, Bengaluru, ~${ev.expected_attendees} student attendees.
+Sponsor tiers: ${JSON.stringify(ev.plan?.tiers ?? [])}
+Recommend 8 real companies that plausibly sponsor college tech events in India and fit this theme and audience
+(developer tools, cloud, startups, edtech, local tech firms). Skip these, already approached: ${JSON.stringify([...known])}.
+For each: a one-sentence reason specific to this event, a fit score 0-100, and the best-fit tier name.
+Return JSON: {"suggestions": [{"company": string, "why": string, "fit_score": integer, "tier": string}]}`,
+    () => ({ suggestions: offlineSuggestions(`${ev.brief} ${ev.name} ${ev.theme}`, tiers.map((t) => t.name), known) }),
+  );
+  const suggestions = (rec.suggestions ?? [])
+    .filter((s) => s.company && !known.has(s.company.toLowerCase()))
+    .map((s) => ({ ...s, fit_score: Math.round(s.fit_score) }))
+    .sort((a, b) => b.fit_score - a.fit_score)
+    .slice(0, 8);
+  await must(db().from("events").update({ plan: { ...ev.plan, suggestions } }).eq("id", eventId));
+  // Demo mode: no leads yet, so draft for the top 3 recommendations, addressed to the demo inbox (never the real company).
+  const inbox = process.env.DEMO_INBOX?.trim();
+  if (!leads.length && inbox && suggestions.length) {
+    const top = suggestions.splice(0, 3);
+    const rows = await must(db().from("sponsors").insert(top.map((x) => ({ event_id: eventId, company: x.company, contact_email: inbox, tier: x.tier, fit_score: x.fit_score }))).select("id, company, status, tier, fit_score"));
+    leads.push(...rows);
+    await must(db().from("events").update({ plan: { ...ev.plan, suggestions } }).eq("id", eventId));
+  }
+  if (!leads.length) return { summary: `Recommended ${suggestions.length} sponsors — press "Draft email" on one to write its pitch` + tag(off1), output: { suggestions } };
+
+  const { count, off: off2 } = await draftPitches(ev, leads);
+  return { summary: `Drafted ${count} pitch${count === 1 ? "" : "es"} — review them under Review & send · ${suggestions.length} more sponsors recommended` + tag(off1 || off2), output: { suggestions } };
 }
 
 /** Copy available club members (roster rows, no event) onto this event. Returns how many joined. */
@@ -300,6 +320,7 @@ Return JSON: {"announcement": string, "reminder_subject": string, "reminder_body
 
 async function reporting(eventId: string) {
   const ev = await getEvent(eventId);
+  if (ev.date && ev.date > TODAY()) return { summary: `Skipped — the report is written after the event (${ev.date}). It uses real attendance, so run it once the day is over.`, output: null };
   const s = await reportStats(eventId);
   const free = ev.plan?.kind === "free";
   const { v: r, off } = await smart<{ summary: string }>(
@@ -363,6 +384,60 @@ async function attempt(eventId: string, agent: string, fn: () => Promise<string>
   }
 }
 
+/** An upcoming event created from the same brief — so the composer can offer to open it instead of making a duplicate. */
+export async function findDuplicate(brief: string) {
+  await requireAdmin();
+  const { data } = await db().from("events").select("id, name, date").ilike("brief", brief.trim()).or(`date.is.null,date.gte.${TODAY()}`).order("created_at", { ascending: false }).limit(1);
+  return data?.[0] ?? null;
+}
+
+/** Permanently delete an event and everything attached to it (registrations, sponsors, shifts…). The UI asks first. */
+export async function deleteEvent(eventId: string) {
+  await requireAdmin();
+  const ev = await must(db().from("events").delete().eq("id", eventId).select("name").single());
+  await db().from("audit_log").insert({ entity: "event", entity_id: eventId, action: "deleted", detail: { name: ev.name } }).then(() => {}, () => {});
+  revalidatePath("/dashboard");
+  redirect("/dashboard");
+}
+
+/** Post-event reports for every past event that doesn't have one yet. */
+export async function generateMissingReports() {
+  await requireAdmin();
+  const past = await must(db().from("events").select("id").lt("date", TODAY()).is("summary", null).not("name", "is", null));
+  let ok = 0;
+  for (const e of past) if ((await runAgent(e.id, "reporting")).ok) ok++;
+  revalidatePath("/dashboard/past");
+  return { ok: true, message: past.length ? `Wrote ${ok} of ${past.length} missing reports — PDFs are ready` : "Every past event already has a report" };
+}
+
+/** The event's pitch: The Why?, Appeal, Trigger, Disruption — for presenting it. Stored in plan.pitch. */
+export async function generatePitch(eventId: string) {
+  return attempt(eventId, "comms", async () => {
+    const ev = await getEvent(eventId);
+    if (!ev.name) throw new Error("Run the Planner first — the pitch is built from the plan.");
+    const free = ev.plan?.kind === "free";
+    const partners = (await must(db().from("sponsors").select("company").eq("event_id", eventId).eq("status", "confirmed"))).map((s) => s.company);
+    const { v, off } = await smart<{ why: string; appeal: string[]; trigger: string; disruption: string[] }>(
+      `You are pitching the college event "${ev.name}" (${ev.theme}) on ${ev.date} at ${ev.venue}, ~${ev.expected_attendees} students, ${free ? "free entry" : `budget ₹${ev.budget}`}${partners.length ? `, partners: ${partners.join(", ")}` : ""}.
+Write a short pitch in four parts, concrete to this event, no hype words:
+"why": 2-3 sentences — the problem or need this event answers for students;
+"appeal": 4 bullet strings — what makes students want to come (prizes, people, skills, perks);
+"trigger": 2 sentences — the moment/deadline that makes them register now, including the date;
+"disruption": 3 bullet strings — what is new or different compared with usual college events.
+Return JSON: {"why": string, "appeal": [string], "trigger": string, "disruption": [string]}`,
+      () => ({
+        why: `Students want hands-on experience with ${ev.theme?.toLowerCase() ?? "new technology"}, but classes rarely give them a day to build, meet people and ship. ${ev.name} gives them exactly that.`,
+        appeal: [free ? "Free entry, open to all branches" : "Food, prizes and swag for every participant", `${ev.expected_attendees} students in one room at ${ev.venue}`, "Mentors and a certificate for everyone who attends", partners.length ? `Backed by ${partners.join(", ")}` : "Real problems, real feedback from organisers"],
+        trigger: `It happens on ${new Date(ev.date).toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long" })} and seats are limited to ${ev.expected_attendees}. Registration closes when they're gone — sign up today.`,
+        disruption: ["Run end to end by AI agents with organisers approving every step", "Every attendee gets a verified certificate automatically", "Sponsors get a real post-event report, not a thank-you email"],
+      }),
+    );
+    const pitch = { why: v.why, appeal: (v.appeal ?? []).slice(0, 6), trigger: v.trigger, disruption: (v.disruption ?? []).slice(0, 5), generated_at: new Date().toISOString(), offline: off };
+    await must(db().from("events").update({ plan: { ...ev.plan, pitch } }).eq("id", eventId));
+    return `Pitch written for ${ev.name}${off ? " (offline mode)" : ""}`;
+  });
+}
+
 export async function createEvent(brief: string, leads: string, volunteers: string) {
   await requireAdmin();
   if (brief.trim().length < 8) throw new Error("Describe the event in a few words.");
@@ -392,9 +467,10 @@ export async function acceptSuggestion(eventId: string, company: string, email: 
     const ev = await getEvent(eventId);
     const s = (ev.plan?.suggestions ?? []).find((x: Suggestion) => x.company === company);
     if (!s) throw new Error("That suggestion is gone — run the Sponsorship agent again.");
-    await must(db().from("sponsors").insert({ event_id: eventId, company, contact_email: email, tier: s.tier, fit_score: s.fit_score }));
+    const lead = await must(db().from("sponsors").insert({ event_id: eventId, company, contact_email: email, tier: s.tier, fit_score: s.fit_score }).select("id, company, tier, fit_score").single());
     await must(db().from("events").update({ plan: { ...ev.plan, suggestions: ev.plan.suggestions.filter((x: Suggestion) => x !== s) } }).eq("id", eventId));
-    return `${company} added as a lead — run Sponsorship to draft its pitch`;
+    const { count, off } = await draftPitches(ev, [lead]);
+    return count ? `Draft ready for ${company} — read and edit it under Review & send${off ? " (offline mode)" : ""}` : `${company} added as a lead — run Sponsorship to draft its pitch`;
   });
 }
 
@@ -823,7 +899,9 @@ export async function suggestRoles(eventId: string) {
       if (UNPOPULAR.has(h.role_key)) load[h.profile_id].unpopular++;
     }
     const open = roles.filter((r) => !filled.has(r.key)).map((r) => ({ key: r.key, name: r.name, skills: r.skills, from: ROLE_WINDOWS[r.key]?.[0] ?? "09:00", to: ROLE_WINDOWS[r.key]?.[1] ?? "17:00" }));
-    const out = suggest(open, profiles, load, ev.date, taken).filter((s) => s.profileId && !declinedPairs.has(`${s.roleKey}:${s.profileId}`));
+    const all = suggest(open, profiles, load, ev.date, taken);
+    const out = all.filter((s) => s.profileId && !declinedPairs.has(`${s.roleKey}:${s.profileId}`));
+    const nobody = all.filter((s) => !s.profileId).length;
     await must(db().from("role_requests").delete().eq("event_id", eventId).eq("status", "suggested"));
     if (out.length) {
       const rows = await must(db().from("role_requests").insert(out.map((s) => ({ event_id: eventId, role_key: s.roleKey, profile_id: s.profileId, status: "suggested", reason: s.reason }))).select("id, role_key"));
@@ -840,7 +918,7 @@ export async function suggestRoles(eventId: string) {
       }));
     }
     await audit("role_requests", null, "suggested", { count: out.length, open: open.length }, eventId);
-    return `${out.length} of ${open.length} open roles have a suggestion — review, then send requests`;
+    return `${out.length} of ${open.length} open roles have a suggestion${nobody ? ` · ${nobody} have nobody available at that time` : ""} — review, then send requests`;
   });
 }
 
@@ -1034,7 +1112,8 @@ function pitchRecipient(email: string) {
 
 async function deliverPitch(s: { id: string; event_id: string; company: string; contact_email: string; pitch_subject: string; pitch_body: string }) {
   const to = pitchRecipient(s.contact_email);
-  const demo = to !== s.contact_email;
+  // Labelled as a demo copy when redirected, or when the lead was addressed to the demo inbox itself.
+  const demo = to !== s.contact_email || (!!process.env.DEMO_INBOX && s.contact_email === process.env.DEMO_INBOX.trim());
   await sendMail({
     to,
     subject: demo ? `[Demo → ${s.company}] ${s.pitch_subject}` : s.pitch_subject,
