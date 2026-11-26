@@ -19,6 +19,8 @@ async function Registration({ params }: { params: Promise<{ id: string }> }) {
   return (
     <div className="grid gap-16 md:grid-cols-[1.2fr_1fr] md:items-end">
       <div>
+        {/* eslint-disable-next-line @next/next/no-img-element -- generated PNG from our own route */}
+        <img src={`/api/poster/${ev.id}`} alt={`${ev.name} poster`} className="mb-10 w-full max-w-sm rounded-2xl border border-line" />
         <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-ink-2">{ev.theme}</p>
         <h1 className="mt-4 font-[family-name:var(--font-archivo)] font-black uppercase [font-stretch:125%] text-[clamp(2.6rem,7vw,5.8rem)] leading-[0.9] tracking-[-0.03em]">{ev.name}</h1>
         <div className="mt-8 space-y-1 border-l border-signal pl-4 text-[15px] text-ink-2">

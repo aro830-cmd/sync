@@ -26,7 +26,7 @@ async function Desk({ params }: { params: Promise<{ id: string }> }) {
   try {
     const d = db();
     const q = (t: string) => d.from(t).select("*").eq("event_id", id);
-    const [ev, sponsors, volunteers, tasks, attendees, runs, past] = await Promise.all([
+    const [ev, sponsors, volunteers, tasks, attendees, runs, past, students] = await Promise.all([
       d.from("events").select("*").eq("id", id).maybeSingle(),
       q("sponsors").order("created_at"),
       q("volunteers"),
@@ -35,8 +35,9 @@ async function Desk({ params }: { params: Promise<{ id: string }> }) {
       q("agent_runs").order("created_at", { ascending: false }).limit(40),
       // Companies that said yes to other events — candidates to invite back.
       d.from("sponsors").select("company, contact_email, tier, events(name, date)").eq("status", "confirmed").neq("event_id", id),
+      d.from("students").select("email"),
     ]);
-    const err = [ev, sponsors, volunteers, tasks, attendees, runs, past].find((r) => r.error)?.error;
+    const err = [ev, sponsors, volunteers, tasks, attendees, runs, past, students].find((r) => r.error)?.error;
     if (err) throw new Error(err.message);
     data = ev.data && {
       event: ev.data,
@@ -47,6 +48,9 @@ async function Desk({ params }: { params: Promise<{ id: string }> }) {
       runs: runs.data!,
       alumni: alumni(past.data as unknown as Alum[]),
       demoInbox: process.env.DEMO_INBOX?.trim() || null,
+      // Students who could still be invited (have an account, not registered yet).
+      invitable: students.data!.filter((s) => !attendees.data!.some((a) => a.email === s.email)).length,
+      studentInbox: process.env.DEMO_STUDENT_INBOX?.trim() || null,
     };
   } catch (e) {
     return <SetupNotice message={e instanceof Error ? e.message : String(e)} />;

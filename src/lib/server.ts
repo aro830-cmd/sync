@@ -70,7 +70,9 @@ export async function sendMail(opts: {
   to: string;
   subject: string;
   text: string;
-  attachments?: { filename: string; content: Buffer }[];
+  html?: string;
+  /** `cid` lets the HTML body show an attachment inline (<img src="cid:...">). */
+  attachments?: { filename: string; content: Buffer; cid?: string }[];
 }) {
   const user = env("GMAIL_USER");
   const transport = nodemailer.createTransport({

@@ -9,6 +9,7 @@ import { currentStudent, endSession, hashPassword, startSession, verifyPassword 
 import { certificatePdf } from "@/lib/pdf";
 import { buildReport, reportStats } from "@/lib/report";
 import { assign } from "@/lib/schedule";
+import { appUrl, posterEvent, posterPng } from "@/lib/poster";
 import { DEMO_MEMBERS, joinSkills, parseSkills } from "@/lib/roster";
 import { offlineComms, offlinePitch, offlinePlan, offlineReport, offlineSuggestions, offlineTasks } from "@/lib/offline";
 
@@ -228,7 +229,7 @@ Return JSON: {"announcement": string, "reminder_subject": string, "reminder_body
     () => offlineComms(ev, ev.plan?.kind === "free"),
   );
   await must(db().from("events").update({ plan: { ...ev.plan, comms: r } }).eq("id", eventId));
-  return { summary: `Registration page live at /e/${eventId.slice(0, 8)}… — announcement and reminder drafted` + tag(off), output: r };
+  return { summary: `Registration page live at /e/${eventId.slice(0, 8)}… — poster, announcement and reminder ready` + tag(off), output: r };
 }
 
 async function reporting(eventId: string) {
@@ -550,6 +551,47 @@ export async function sendReminders(eventId: string) {
     const att = await must(db().from("attendees").select("email").eq("event_id", eventId));
     for (const a of att) await sendMail({ to: a.email, subject: c.reminder_subject, text: c.reminder_body });
     return `Sent reminder to ${att.length} attendee${att.length === 1 ? "" : "s"}`;
+  });
+}
+
+/**
+ * Student accounts that aren't registered yet get the poster and an invite. Fictional demo students (@example.com) can't
+ * receive mail, so with DEMO_STUDENT_INBOX set their invites go there — collapsed into one copy per run.
+ */
+export async function sendInvites(eventId: string) {
+  return attempt(eventId, "comms", async () => {
+    const ev = await getEvent(eventId);
+    if (!ev.plan?.comms) throw new Error("Run the Comms agent first to write the invite.");
+    const [students, registered] = await Promise.all([
+      must(db().from("students").select("email")),
+      must(db().from("attendees").select("email").eq("event_id", eventId)),
+    ]);
+    const have = new Set(registered.map((a) => a.email));
+    const inbox = process.env.DEMO_STUDENT_INBOX?.trim();
+    const to = [...new Set(students.map((s) => s.email).filter((e) => !have.has(e)).map((e) => (inbox && /@([\w-]+\.)*example\.com$/i.test(e) ? inbox : e)))];
+    if (!to.length) throw new Error("Every student with an account is already registered.");
+
+    const base = await appUrl();
+    const link = `${base}/e/${eventId}`;
+    const poster = await posterPng((await posterEvent(eventId))!, link);
+    const day = new Date(ev.date).toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long" });
+    const text = ev.plan.comms.announcement.replace("{link}", link);
+    for (const email of to)
+      await sendMail({
+        to: email,
+        subject: `You're invited: ${ev.name} — ${day}`,
+        text: `${text}\n\nRegister: ${link}`,
+        html: `<div style="font-family:Arial,sans-serif;max-width:560px;margin:auto;color:#1a1310">
+  <img src="cid:poster" alt="${ev.name} poster" style="width:100%;border-radius:12px" />
+  <h1 style="font-size:24px;margin:24px 0 8px">${ev.name}</h1>
+  <p style="margin:0 0 4px;color:#5a4d42">${day} · ${ev.venue}</p>
+  <p style="font-size:15px;line-height:1.55">${text.replace(/Register:[\s\S]*$/, "").replace(/</g, "&lt;")}</p>
+  <p><a href="${link}" style="display:inline-block;background:#ec6426;color:#fff;padding:12px 22px;border-radius:999px;text-decoration:none;font-weight:bold">Register now →</a></p>
+  <p style="font-size:12px;color:#7a6d62">Sent by Relay on behalf of Team ${ev.name}.</p>
+</div>`,
+        attachments: [{ filename: "poster.png", content: poster, cid: "poster" }],
+      });
+    return `Invited ${to.length} student inbox${to.length === 1 ? "" : "es"} with the poster${inbox && to.includes(inbox) ? ` (demo copy → ${inbox})` : ""}`;
   });
 }
 

@@ -15,7 +15,7 @@ import { Shell } from "./shell";
 import { Button, Card, Empty, Label, Stat, ToastProvider, ease, useToast } from "./ui";
 
 type Alum = { company: string; email: string; tier: string | null; event: string; times: number };
-type Data = { event: EventRow; sponsors: Sponsor[]; volunteers: Volunteer[]; tasks: Task[]; attendees: Attendee[]; runs: Run[]; alumni: Alum[]; demoInbox: string | null };
+type Data = { event: EventRow; sponsors: Sponsor[]; volunteers: Volunteer[]; tasks: Task[]; attendees: Attendee[]; runs: Run[]; alumni: Alum[]; demoInbox: string | null; invitable: number; studentInbox: string | null };
 type Live = Partial<Record<AgentName, "running" | "done" | "failed">>;
 type Section = "overview" | AgentName;
 type AgentState = "idle" | "running" | "done" | "failed";
@@ -1032,7 +1032,7 @@ function Roles({ volunteers, tasks }: { volunteers: Volunteer[]; tasks: Task[] }
 
 // ───────────── 04 comms ─────────────
 
-function Comms({ event, attendees }: Data) {
+function Comms({ event, attendees, invitable, studentInbox }: Data) {
   const [pending, go] = useAction();
   const [toggling, startToggle] = useTransition();
   const notify = useToast();
@@ -1072,6 +1072,8 @@ function Comms({ event, attendees }: Data) {
           )}
         </Card>
       </div>
+
+      <Invites event={event} invitable={invitable} studentInbox={studentInbox} ready={!!comms} />
 
       <Card
         title="Attendees & check-in"
@@ -1119,6 +1121,52 @@ function Comms({ event, attendees }: Data) {
         )}
       </Card>
     </div>
+  );
+}
+
+/** The generated poster plus a confirm-gated "send poster + invite to students". */
+function Invites({ event, invitable, studentInbox, ready }: { event: EventRow; invitable: number; studentInbox: string | null; ready: boolean }) {
+  const [pending, go] = useAction();
+  const [confirm, setConfirm] = useState(false);
+  const [v] = useState(Date.now); // cache-buster so a re-plan shows the fresh poster
+  const src = `/api/poster/${event.id}?v=${v}`;
+  return (
+    <Card title="Poster & student invites" sub="Comms designs the poster from the plan. Invites go to students with a Relay account who haven't registered yet.">
+      {event.name ? (
+        <div className="grid gap-5 md:grid-cols-[minmax(0,320px)_1fr]">
+          <a href={src} target="_blank" className="group relative block overflow-hidden rounded-xl border border-d-line">
+            {/* eslint-disable-next-line @next/next/no-img-element -- generated PNG from our own route */}
+            <img src={src} alt={`${event.name} poster`} className="aspect-[4/5] w-full object-cover transition-transform duration-500 group-hover:scale-[1.02]" />
+          </a>
+          <div className="flex flex-col">
+            <div className="space-y-2 text-[13px]">
+              <div className="flex gap-3"><span className="w-20 shrink-0 text-d-ink3">Subject</span><span>You&apos;re invited: {event.name}</span></div>
+              <div className="flex gap-3"><span className="w-20 shrink-0 text-d-ink3">Recipients</span><span>{invitable} student{invitable === 1 ? "" : "s"} not registered yet</span></div>
+              {studentInbox && <div className="flex gap-3"><span className="w-20 shrink-0 text-d-ink3">Demo</span><span className="text-s3">Fictional students&apos; invites go to {studentInbox}</span></div>}
+              <div className="flex gap-3"><span className="w-20 shrink-0 text-d-ink3">Contains</span><span className="text-d-ink2">The poster, the announcement and a Register button</span></div>
+            </div>
+            <div className="mt-auto flex flex-wrap gap-2 pt-5">
+              <a href={src} download className="inline-flex h-9 items-center rounded-lg border border-d-line bg-white/[0.03] px-3.5 text-[13px] font-medium transition-colors hover:bg-white/[0.07]">Download poster</a>
+              {confirm ? (
+                <>
+                  <Button variant="ghost" onClick={() => setConfirm(false)}>Cancel</Button>
+                  <Button variant="accent" pending={pending} onClick={() => go(() => act.sendInvites(event.id), () => setConfirm(false))}>
+                    Yes, send {invitable} invite{invitable === 1 ? "" : "s"}
+                  </Button>
+                </>
+              ) : (
+                <Button variant="accent" disabled={!ready || !invitable} onClick={() => setConfirm(true)}>
+                  Send poster + invite to students →
+                </Button>
+              )}
+            </div>
+            {!ready && <p className="mt-2 text-[12px] text-d-ink3">Run the Comms agent first — it writes the invite text.</p>}
+          </div>
+        </div>
+      ) : (
+        <Empty>Run the Planner first — the poster is built from the plan.</Empty>
+      )}
+    </Card>
   );
 }
 
