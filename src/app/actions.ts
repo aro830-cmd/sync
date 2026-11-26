@@ -9,6 +9,7 @@ import { currentStudent, endSession, hashPassword, startSession, verifyPassword 
 import { certificatePdf } from "@/lib/pdf";
 import { buildReport, reportStats } from "@/lib/report";
 import { assign } from "@/lib/schedule";
+import { DEMO_MEMBERS, joinSkills, parseSkills } from "@/lib/roster";
 import { offlineComms, offlinePitch, offlinePlan, offlineReport, offlineSuggestions, offlineTasks } from "@/lib/offline";
 
 import type { AgentName } from "@/lib/agents";
@@ -348,6 +349,63 @@ export async function updateEvent(eventId: string, edit: EventEdit) {
     );
     const what = Object.keys(changed).map((k) => (k === "budget" ? `budget ${inr(before.budget)} → ${inr(budget)}` : k.replace("_", " "))).join(", ");
     return `Details updated${what ? `: ${what}` : ""}`;
+  });
+}
+
+// ───────────────────────── club volunteer roster (volunteers with no event) ─────────────────────────
+
+async function rosterAction(fn: () => Promise<string>): Promise<Result> {
+  try {
+    await requireAdmin();
+    return { ok: true, message: await fn() };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : String(e) };
+  } finally {
+    revalidatePath("/dashboard/volunteers");
+  }
+}
+
+export async function addMember(name: string, email: string, skills: string[]) {
+  return rosterAction(async () => {
+    name = name.trim().slice(0, 100);
+    email = email.trim().toLowerCase().slice(0, 200);
+    if (!name || !EMAIL.test(email)) throw new Error("Enter a name and a valid email.");
+    const dupe = await must(db().from("volunteers").select("id").is("event_id", null).eq("email", email));
+    if (dupe.length) throw new Error(`${email} is already on the roster.`);
+    await must(db().from("volunteers").insert({ event_id: null, name, email, skills: joinSkills(skills, true) }));
+    return `${name} joined the volunteer roster`;
+  });
+}
+
+export async function setMemberAvailable(id: string, available: boolean) {
+  return rosterAction(async () => {
+    const m = await must(db().from("volunteers").select("name, skills").eq("id", id).is("event_id", null).single());
+    await must(db().from("volunteers").update({ skills: joinSkills(parseSkills(m.skills).skills, available) }).eq("id", id));
+    return `${m.name} is ${available ? "available" : "away"}`;
+  });
+}
+
+export async function setMemberSkills(id: string, skills: string[]) {
+  return rosterAction(async () => {
+    const m = await must(db().from("volunteers").select("name, skills").eq("id", id).is("event_id", null).single());
+    await must(db().from("volunteers").update({ skills: joinSkills(skills, parseSkills(m.skills).available) }).eq("id", id));
+    return `Updated ${m.name}'s roles`;
+  });
+}
+
+export async function removeMember(id: string) {
+  return rosterAction(async () => {
+    const m = await must(db().from("volunteers").delete().eq("id", id).is("event_id", null).select("name").single());
+    return `${m.name} removed from the roster`;
+  });
+}
+
+export async function addDemoMembers() {
+  return rosterAction(async () => {
+    const have = new Set((await must(db().from("volunteers").select("email").is("event_id", null))).map((v) => v.email));
+    const rows = DEMO_MEMBERS.filter(([, email]) => !have.has(email)).map(([name, email, skills]) => ({ event_id: null, name, email, skills: joinSkills(skills, true) }));
+    if (rows.length) await must(db().from("volunteers").insert(rows));
+    return rows.length ? `Added ${rows.length} demo members` : "Demo members are already on the roster";
   });
 }
 

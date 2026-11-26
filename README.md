@@ -35,6 +35,7 @@ Next.js 16 + TypeScript · Tailwind v4 + motion · Gemini · Supabase Postgres �
 - `/` — landing
 - `/admin/login` → `/dashboard` — organiser home: brief composer with agent picker, lifetime stats, "Needs you" inbox, upcoming events, charts
 - `/dashboard/past` — past events, registered vs attended, loyal partners, "Run it again"
+- `/dashboard/volunteers` — club volunteer roster: availability, preferred roles, events and hours served
 - `/dashboard/sponsors` — sponsor directory: every company pitched or partnered, contacts, notes, history per event
 - `/dashboard/agents/[agent]` — one page per agent: what it does, run it alone on any event, its history
 - `/dashboard/[id]` — event desk (`?s=<agent>` opens an agent page)

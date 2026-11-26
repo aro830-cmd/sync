@@ -131,3 +131,14 @@ for (const [n, name, theme, date, budget, expected, venue, reg, checked, sponsor
   }))));
   console.log(`seeded ${name}`);
 }
+
+// Club volunteer roster (volunteers with no event); same emails as the seeded shifts so history shows up.
+const ROSTER = [
+  ["Aditi Rao", "aditi@example.com", "registration, design"], ["Rahul Menon", "rahul@example.com", "av"],
+  ["Sneha Iyer", "sneha@example.com", "logistics, hospitality"], ["Karthik S", "karthik@example.com", "av, tech"],
+  ["Meera Nair", "meera@example.com", "social, design"], ["Farhan Ali", "farhan@example.com", "tech, logistics"],
+  ["Ishita Das", "ishita.das@example.com", "registration, hospitality"], ["Varun Prasad", "varun.prasad@example.com", "social, away"],
+];
+await must(db.from("volunteers").delete().is("event_id", null).in("email", ROSTER.map((r) => r[1])));
+await must(db.from("volunteers").insert(ROSTER.map(([name, email, skills]) => ({ event_id: null, name, email, skills }))));
+console.log(`seeded roster of ${ROSTER.length}`);
