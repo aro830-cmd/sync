@@ -5,6 +5,30 @@ import nodemailer from "nodemailer";
 import { geminiError, withFallback } from "@/lib/retry";
 import { cookies } from "next/headers";
 import { ADMIN_COOKIE, readToken } from "@/lib/token";
+import { createHash } from "node:crypto";
+import { THRESHOLD, cosine, embed, facts } from "@/lib/vcache";
+
+/**
+ * Vector memory: a past answer to a near-identical prompt (cosine ≥ THRESHOLD on a local embedding) with exactly the
+ * same facts (numbers, dates, names) is reused instead of calling Gemini. Cache errors never block a real call.
+ */
+async function recall(key: string, vec: number[]) {
+  try {
+    const { data } = await db().from("llm_cache").select("id, vec, response, hits").eq("facts", key).order("created_at", { ascending: false }).limit(50);
+    const best = (data ?? []).map((r) => ({ r, sim: cosine(vec, r.vec) })).sort((a, b) => b.sim - a.sim)[0];
+    if (!best || best.sim < THRESHOLD) return null;
+    await db().from("llm_cache").update({ hits: best.r.hits + 1, last_hit_at: new Date().toISOString() }).eq("id", best.r.id);
+    return JSON.parse(best.r.response) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+/** How many Gemini calls the vector memory has saved so far. */
+export async function callsSaved() {
+  const { data } = await db().from("llm_cache").select("hits");
+  return (data ?? []).reduce((s, r) => s + (r.hits ?? 0), 0);
+}
 
 function env(name: string) {
   const v = process.env[name];
@@ -28,6 +52,10 @@ const cooling = new Map<string, number>();
 
 /** Ask Gemini for JSON. The agent code, not the model, performs side effects. */
 export async function llm<T>(prompt: string): Promise<T> {
+  const key = createHash("sha256").update(facts(prompt)).digest("hex");
+  const vec = embed(prompt);
+  const remembered = await recall(key, vec);
+  if (remembered) return remembered as T;
   const primary = process.env.GEMINI_MODEL || "gemini-3.8-flash";
   const models = [primary, ...FALLBACK_MODELS.filter((m) => m !== primary)];
   // GEMINI_API_KEY_FALLBACK (optional, comma-separated) adds more quota. Order: best model on every key, then the next model.
@@ -60,7 +88,9 @@ export async function llm<T>(prompt: string): Promise<T> {
   }
   try {
     // Some fallback models wrap JSON in a markdown fence; strip it.
-    return JSON.parse((res.text ?? "").replace(/^\s*```(?:json)?\s*|\s*```\s*$/g, "")) as T;
+    const out = JSON.parse((res.text ?? "").replace(/^\s*```(?:json)?\s*|\s*```\s*$/g, "")) as T;
+    await db().from("llm_cache").insert({ facts: key, vec, response: JSON.stringify(out) }).then(() => {}, () => {});
+    return out;
   } catch {
     throw new Error("Gemini returned malformed JSON. Run the agent again.");
   }

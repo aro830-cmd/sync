@@ -37,10 +37,21 @@ export type Sponsor = {
   proposal_sent_at?: string | null;
 };
 
-export type Volunteer = { id: string; name: string; email: string; skills: string | null };
+export type VolProfile = { dept?: string; year?: number; phone?: string; bio?: string; events_helped?: number; availability?: string };
+export type Volunteer = { id: string; name: string; email: string; skills: string | null; profile?: VolProfile | null };
 export type Task = { id: string; title: string; skill: string | null; starts_at: string; ends_at: string; volunteer_id: string | null };
 export type Attendee = { id: string; name: string; email: string; usn: string | null; checked_in: boolean; certificate_sent: boolean; created_at: string };
-export type Run = { id: string; agent: string; summary: string; ok: boolean; created_at: string };
+export type Run = { id: string; agent: string; summary: string; ok: boolean; created_at: string; output?: unknown };
+
+/** A live campus change fed to the Re-Router. */
+export type Disruption =
+  | { kind: "volunteer_out"; volunteerId: string }
+  | { kind: "venue_change"; venue?: string; from?: string; minutes?: number }
+  | { kind: "sponsor_out"; sponsorId: string };
+export type DiffLine = { record: string; before: string; after: string; decision?: string };
+export type Alerted = { name: string; email: string; role: "volunteer" | "attendee" | "organiser"; lines: DiffLine[] };
+/** Stored as agent_runs.output for agent "rerouter". */
+export type Reroute = { headline: string; changes: DiffLine[]; alerts: Alerted[]; scope: string; total: number; emailed: number; failed: number };
 
 /** A free event (seminar, talk) has no budget and no sponsors. */
 export const isFree = (e: Pick<EventRow, "plan">) => e.plan?.kind === "free";
@@ -92,3 +103,25 @@ export type RoleRequest = { id: string; event_id: string; role_key: string; prof
 export type Reward = { id: string; profile_id: string; event_id: string | null; kind: "certificate" | "meal" | "merch" | "reimbursement" | "recommendation" | "mentor_session" | "priority_access"; status: "promised" | "delivered"; note: string | null; delivered_at: string | null };
 export type Incident = { id: string; event_id: string; title: string; severity: "low" | "medium" | "high"; status: "open" | "resolved"; note: string | null; created_at: string; resolved_at: string | null };
 export type AuditEntry = { id: string; actor: string; event_id: string | null; entity: string; entity_id: string | null; action: string; detail: Record<string, unknown>; created_at: string };
+
+/** An automated outcome with the reasons behind it, open to appeal. */
+export type DecisionStatus = "auto" | "appealed" | "upheld" | "overridden" | "rejected";
+export type Decision = {
+  id: string;
+  event_id: string;
+  kind: "shift" | "reroute" | "sponsor" | "plan" | "role";
+  subject_id: string | null;
+  subject: string;
+  outcome: string;
+  decided_by: string;
+  why: {
+    rules: { rule: string; ok: boolean; detail: string }[];
+    considered?: { id: string; name: string; verdict: string; detail: string; load: number }[];
+    scores?: Record<string, number | string>;
+    notes?: string[];
+  };
+  status: DecisionStatus;
+  appeal: { type: "dispute" | "override"; by: string; message: string; proposal?: string } | null;
+  created_at: string;
+};
+export type DecisionLog = { id: string; decision_id: string; from_status: string | null; to_status: DecisionStatus; actor: string; note: string | null; created_at: string };

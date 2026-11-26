@@ -8,6 +8,7 @@ import { ROLE_WINDOWS } from "@/lib/match";
 import type { EventRow, RoleRequest } from "@/lib/types";
 import type { Crm } from "./Deals";
 import { Button, Card, Empty, ease, useToast } from "./ui";
+import { Why } from "./Why";
 
 function useRun() {
   const notify = useToast();
@@ -88,6 +89,7 @@ export function MissionRoles({ event, crm }: { event: EventRow; crm: NonNullable
                     <span className="font-medium">{name(r.profile_id)}</span>
                     <span className={`rounded-full px-2 py-0.5 text-[10.5px] capitalize ${STATUS[r.status]}`}>{r.status === "requested" && r.reason?.startsWith("Applied by") ? "applied" : r.status}</span>
                     {r.overridden && <span className="rounded-full bg-white/[0.06] px-2 py-0.5 text-[10.5px] text-d-ink2">organiser override</span>}
+                    <Why subject={r.id} />
                     <span className="ml-auto flex flex-wrap gap-1.5">
                       {r.status === "suggested" && <Button variant="ghost" className="h-7" pending={pending} onClick={() => run(() => act.setRoleStatus(event.id, r.id, "requested"))}>Send request</Button>}
                       {r.status === "requested" && r.reason?.startsWith("Applied by") && (

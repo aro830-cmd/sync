@@ -15,7 +15,13 @@ export type MatchProfile = {
 };
 /** Our own records only: how many roles they've done recently and how many of those were unpopular. */
 export type Load = { recent: number; unpopular: number };
-export type Suggestion = { roleKey: string; profileId: string | null; reason: string; alternatives: string[] };
+/** Structured explanation for the Why? panel: each rule checked, everyone considered, the scores. */
+export type MatchWhy = {
+  rules: { rule: string; ok: boolean; detail: string }[];
+  considered: { id: string; name: string; verdict: string; detail: string; load: number }[];
+  scores: Record<string, number | string>;
+};
+export type Suggestion = { roleKey: string; profileId: string | null; reason: string; alternatives: string[]; why: MatchWhy };
 
 /** Roles most people avoid (early starts, cleanup). Shared out in turn instead of landing on the same people. */
 export const UNPOPULAR = new Set(["check_in_lead", "sustainability_lead", "demo_floor_captain"]);
@@ -65,11 +71,27 @@ export function suggest(roles: MatchRole[], profiles: MatchProfile[], load: Reco
 
   // Fill the hardest roles first (fewest candidates), one role per person per event.
   const used = new Set(taken);
+  // Everyone the matcher looked at for a role, best first, with the real reason they weren't picked.
+  type Cand = (typeof scored)[number]["cands"][number];
+  const considered = (r: MatchRole, cands: Cand[], chosen: string | null) => [
+    ...cands.map((c) => ({
+      id: c.p.id, name: c.p.name, load: c.l.recent,
+      verdict: c.p.id === chosen ? "chosen" : used.has(c.p.id) && c.p.id !== chosen ? "has a role" : "lower score",
+      detail: `score ${c.score.toFixed(2)}${c.prefers ? " · chose it" : ""}${c.skills.length ? ` · ${c.skills.join(", ")}` : ""}`,
+    })),
+    ...profiles
+      .filter((p) => !cands.some((c) => c.p.id === p.id))
+      .map((p) => ({ id: p.id, name: p.name, load: load[p.id]?.recent ?? 0, verdict: "excluded", detail: !p.opted_in ? "Opted out" : !p.available ? "Marked away" : `Not available ${r.from}–${r.to}` })),
+  ];
   const out = new Map<string, Suggestion>();
   for (const { r, cands } of [...scored].sort((a, b) => a.cands.length - b.cands.length)) {
     const pick = cands.find((c) => !used.has(c.p.id));
     if (!pick) {
-      out.set(r.key, { roleKey: r.key, profileId: null, reason: cands.length ? "Everyone who fits already has a role at this event." : "No opted-in volunteer is available for this time.", alternatives: [] });
+      out.set(r.key, {
+        roleKey: r.key, profileId: null, alternatives: [],
+        reason: cands.length ? "Everyone who fits already has a role at this event." : "No opted-in volunteer is available for this time.",
+        why: { rules: [{ rule: "Someone free who fits", ok: false, detail: cands.length ? "Everyone who fits already has a role at this event" : "No opted-in volunteer is available for this time" }], considered: considered(r, cands, null), scores: {} },
+      });
       continue;
     }
     used.add(pick.p.id);
@@ -80,7 +102,26 @@ export function suggest(roles: MatchRole[], profiles: MatchProfile[], load: Reco
     why.push(pick.avail === "yes" ? `they're available ${r.from}–${r.to}` : "they haven't set availability yet — confirm the time with them");
     if (pick.l.recent < avg) why.push(`they've had fewer recent roles (${pick.l.recent}) than average`);
     if (pick.unpop && !pick.l.unpopular) why.push("it's their turn for an early/cleanup role");
-    out.set(r.key, { roleKey: r.key, profileId: pick.p.id, reason: `Suggested because ${why.join(", ")}.`, alternatives: cands.filter((c) => c.p.id !== pick.p.id).slice(0, 3).map((c) => c.p.id) });
+    out.set(r.key, {
+      roleKey: r.key,
+      profileId: pick.p.id,
+      reason: `Suggested because ${why.join(", ")}.`,
+      alternatives: cands.filter((c) => c.p.id !== pick.p.id).slice(0, 3).map((c) => c.p.id),
+      why: {
+        rules: [
+          { rule: "Respects stated availability", ok: true, detail: pick.avail === "yes" ? `Available ${r.from}–${r.to}` : "No availability set yet — confirm the time with them" },
+          { rule: "Chose this role", ok: pick.prefers, detail: pick.prefers ? `${r.name} is in their preferred roles` : "Not in their preferred roles" },
+          { rule: `Has the role's skills (${r.skills.join(", ") || "none needed"})`, ok: !r.skills.length || pick.skills.length > 0, detail: pick.skills.length ? `Matches ${pick.skills.join(", ")}` : "No matching skill" },
+          { rule: "Matches a learning goal", ok: pick.goal, detail: pick.goal ? "Their learning goal mentions this kind of work" : "No matching learning goal" },
+          { rule: "Shares the load fairly", ok: pick.l.recent <= avg, detail: `${pick.l.recent} recent role${pick.l.recent === 1 ? "" : "s"} vs team average ${avg.toFixed(1)}` },
+          ...(pick.unpop ? [{ rule: "Early/cleanup roles rotate", ok: !pick.l.unpopular, detail: pick.l.unpopular ? `Has done ${pick.l.unpopular} recently` : "Their turn — none done recently" }] : []),
+          { rule: "One role per person per event", ok: true, detail: "Hardest-to-fill roles are matched first" },
+          { rule: "No sensitive attributes", ok: true, detail: "Only skills, preferences, availability, goals and our own load history" },
+        ],
+        considered: considered(r, cands, pick.p.id),
+        scores: { score: Number(pick.score.toFixed(2)), "recent roles": pick.l.recent, "team avg": Number(avg.toFixed(1)) },
+      },
+    });
   }
   return roles.map((r) => out.get(r.key)!);
 }
