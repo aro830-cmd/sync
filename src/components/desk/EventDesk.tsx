@@ -793,7 +793,7 @@ function Sponsors({ event, sponsors, alumni, demoInbox, crm, today }: Data) {
 
       <Deals event={event} sponsors={sponsors} crm={crm} today={today} />
 
-      <Suggestions event={event} />
+      <Suggestions event={event} demoInbox={demoInbox} />
       <PastPartners eventId={event.id} alumni={alumni.filter((a) => !sponsors.some((s) => s.company === a.company))} />
 
       <Card title="Add sponsor leads" sub="One company per line — the agent drafts a pitch for each new lead">
@@ -809,7 +809,7 @@ function Review({ eventId, drafts, tierAmt, demoInbox }: { eventId: string; draf
   const [i, setI] = useState(0);
   if (!drafts.length) return null;
   const s = drafts[Math.min(i, drafts.length - 1)];
-  const demo = !!demoInbox && /@([\w-]+\.)*example\.com$/i.test(s.contact_email);
+  const demo = !!demoInbox && (s.contact_email === demoInbox || /@([\w-]+\.)*example\.com$/i.test(s.contact_email));
   return (
     <Card
       title={`Review & send · ${drafts.length} pitch${drafts.length === 1 ? "" : "es"} waiting`}
@@ -877,14 +877,14 @@ function PastPartners({ eventId, alumni }: { eventId: string; alumni: Alum[] }) 
 }
 
 /** Real companies the agent recommended. Accepting one needs a contact email; then it's an ordinary lead. */
-function Suggestions({ event }: { event: EventRow }) {
+function Suggestions({ event, demoInbox }: { event: EventRow; demoInbox: string | null }) {
   const list = event.plan?.suggestions ?? [];
   return (
-    <Card title="Recommended by the agent" sub={list.length ? "Real companies that fit this event. Add a contact email to turn one into a lead." : undefined}>
+    <Card title="Recommended by the agent" sub={list.length ? `Real companies that fit this event. "Draft email" writes the pitch${demoInbox ? ` — addressed to your demo inbox ${demoInbox}` : ""}; you review it before anything is sent.` : undefined}>
       {list.length ? (
         <ul className="grid gap-2 md:grid-cols-2">
           <AnimatePresence initial={false}>
-            {list.map((s, i) => <Suggestion key={s.company} eventId={event.id} s={s} i={i} />)}
+            {list.map((s, i) => <Suggestion key={s.company} eventId={event.id} s={s} i={i} demoInbox={demoInbox} />)}
           </AnimatePresence>
         </ul>
       ) : (
@@ -894,8 +894,8 @@ function Suggestions({ event }: { event: EventRow }) {
   );
 }
 
-function Suggestion({ eventId, s, i }: { eventId: string; s: NonNullable<NonNullable<EventRow["plan"]>["suggestions"]>[number]; i: number }) {
-  const [email, setEmail] = useState("");
+function Suggestion({ eventId, s, i, demoInbox }: { eventId: string; s: NonNullable<NonNullable<EventRow["plan"]>["suggestions"]>[number]; i: number; demoInbox: string | null }) {
+  const [email, setEmail] = useState(demoInbox ?? "");
   const [open, setOpen] = useState(false);
   const [pending, go] = useAction();
   return (
@@ -916,12 +916,12 @@ function Suggestion({ eventId, s, i }: { eventId: string; s: NonNullable<NonNull
         <form className="mt-3 flex gap-2" onSubmit={(e) => (e.preventDefault(), go(() => act.acceptSuggestion(eventId, s.company, email)))}>
           <input autoFocus type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder={`partnerships@${s.company.split(" ")[0].toLowerCase()}.com`} aria-label={`Contact email for ${s.company}`}
             className="h-9 min-w-0 flex-1 rounded-lg border border-d-line bg-black/30 px-3 text-[13px] text-d-ink outline-none placeholder:text-d-ink3 focus:border-white/25" />
-          <Button pending={pending} disabled={!email}>Add lead</Button>
+          <Button pending={pending} disabled={!email}>{pending ? "Drafting…" : "Draft email"}</Button>
         </form>
       ) : (
         <div className="mt-3 flex justify-end gap-1.5">
           <button disabled={pending} onClick={() => go(() => act.dismissSuggestion(eventId, s.company))} className="rounded-md px-2 py-1 text-[12px] text-d-ink3 transition-colors hover:text-d-ink">Dismiss</button>
-          <button onClick={() => setOpen(true)} className="rounded-md border border-d-line px-2.5 py-1 text-[12px] text-d-ink transition-colors hover:border-s1/50 hover:bg-s1/10">+ Add contact</button>
+          <button onClick={() => setOpen(true)} className="rounded-md border border-s1/50 bg-s1/10 px-2.5 py-1 text-[12px] text-d-ink transition-colors hover:bg-s1/20">Draft email →</button>
         </div>
       )}
     </motion.li>

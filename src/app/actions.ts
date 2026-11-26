@@ -115,32 +115,9 @@ The organiser has set these values by hand — use them exactly and plan around 
 
 type Suggestion = { company: string; why: string; fit_score: number; tier: string };
 
-async function sponsorship(eventId: string) {
-  const ev = await getEvent(eventId);
-  if (ev.plan?.kind === "free") return { summary: "Skipped — free event, no sponsors needed", output: null };
-  const all = await must(db().from("sponsors").select("id, company, status, tier, fit_score").eq("event_id", eventId));
-  const leads = all.filter((s) => s.status === "lead");
-
-  // Recommend real companies the club hasn't approached yet. No contact emails: the organiser adds one on accept.
-  const known = new Set(all.map((s) => s.company.toLowerCase()));
+/** Write a funding-request email for each lead and mark it drafted. Used by the agent and by "Draft email" on a recommendation. */
+async function draftPitches(ev: Awaited<ReturnType<typeof getEvent>>, leads: { id: string; company: string; tier: string | null; fit_score: number | null }[]) {
   const tiers: { name: string; amount: number; perks: string[] }[] = ev.plan?.tiers ?? [];
-  const { v: rec, off: off1 } = await smart<{ suggestions: Suggestion[] }>(
-    `You are the Sponsorship agent for "${ev.name}" (${ev.theme}), on ${ev.date} at ${ev.venue}, Bengaluru, ~${ev.expected_attendees} student attendees.
-Sponsor tiers: ${JSON.stringify(ev.plan?.tiers ?? [])}
-Recommend 8 real companies that plausibly sponsor college tech events in India and fit this theme and audience
-(developer tools, cloud, startups, edtech, local tech firms). Skip these, already approached: ${JSON.stringify([...known])}.
-For each: a one-sentence reason specific to this event, a fit score 0-100, and the best-fit tier name.
-Return JSON: {"suggestions": [{"company": string, "why": string, "fit_score": integer, "tier": string}]}`,
-    () => ({ suggestions: offlineSuggestions(`${ev.brief} ${ev.name} ${ev.theme}`, tiers.map((t) => t.name), known) }),
-  );
-  const suggestions = (rec.suggestions ?? [])
-    .filter((s) => s.company && !known.has(s.company.toLowerCase()))
-    .map((s) => ({ ...s, fit_score: Math.round(s.fit_score) }))
-    .sort((a, b) => b.fit_score - a.fit_score)
-    .slice(0, 8);
-  await must(db().from("events").update({ plan: { ...ev.plan, suggestions } }).eq("id", eventId));
-  if (!leads.length) return { summary: `Recommended ${suggestions.length} sponsors — add a contact email to pitch one` + tag(off1), output: { suggestions } };
-
   // Small integer keys instead of UUIDs: the model echoes them back reliably.
   const { v: r, off: off2 } = await smart<{ pitches: { n: number; tier: string; fit_score: number; subject: string; body: string }[] }>(
     `You are the Sponsorship agent for "${ev.name}" (${ev.theme}), on ${ev.date} at ${ev.venue}, ~${ev.expected_attendees} student attendees.
@@ -171,7 +148,45 @@ Return JSON: {"pitches": [{"n": integer (same n), "tier": string, "fit_score": i
         .eq("id", leads[p.n].id),
     );
   }
-  return { summary: `Drafted ${pitches.length} pitches — waiting for your approval to send · ${suggestions.length} new sponsors recommended` + tag(off1 || off2), output: { pitches, suggestions } };
+  return { count: pitches.length, off: off2 };
+}
+
+async function sponsorship(eventId: string) {
+  const ev = await getEvent(eventId);
+  if (ev.plan?.kind === "free") return { summary: "Skipped — free event, no sponsors needed", output: null };
+  const all = await must(db().from("sponsors").select("id, company, status, tier, fit_score").eq("event_id", eventId));
+  const leads = all.filter((s) => s.status === "lead");
+
+  // Recommend real companies the club hasn't approached yet. No contact emails: the organiser adds one on accept.
+  const known = new Set(all.map((s) => s.company.toLowerCase()));
+  const tiers: { name: string; amount: number; perks: string[] }[] = ev.plan?.tiers ?? [];
+  const { v: rec, off: off1 } = await smart<{ suggestions: Suggestion[] }>(
+    `You are the Sponsorship agent for "${ev.name}" (${ev.theme}), on ${ev.date} at ${ev.venue}, Bengaluru, ~${ev.expected_attendees} student attendees.
+Sponsor tiers: ${JSON.stringify(ev.plan?.tiers ?? [])}
+Recommend 8 real companies that plausibly sponsor college tech events in India and fit this theme and audience
+(developer tools, cloud, startups, edtech, local tech firms). Skip these, already approached: ${JSON.stringify([...known])}.
+For each: a one-sentence reason specific to this event, a fit score 0-100, and the best-fit tier name.
+Return JSON: {"suggestions": [{"company": string, "why": string, "fit_score": integer, "tier": string}]}`,
+    () => ({ suggestions: offlineSuggestions(`${ev.brief} ${ev.name} ${ev.theme}`, tiers.map((t) => t.name), known) }),
+  );
+  const suggestions = (rec.suggestions ?? [])
+    .filter((s) => s.company && !known.has(s.company.toLowerCase()))
+    .map((s) => ({ ...s, fit_score: Math.round(s.fit_score) }))
+    .sort((a, b) => b.fit_score - a.fit_score)
+    .slice(0, 8);
+  await must(db().from("events").update({ plan: { ...ev.plan, suggestions } }).eq("id", eventId));
+  // Demo mode: no leads yet, so draft for the top 3 recommendations, addressed to the demo inbox (never the real company).
+  const inbox = process.env.DEMO_INBOX?.trim();
+  if (!leads.length && inbox && suggestions.length) {
+    const top = suggestions.splice(0, 3);
+    const rows = await must(db().from("sponsors").insert(top.map((x) => ({ event_id: eventId, company: x.company, contact_email: inbox, tier: x.tier, fit_score: x.fit_score }))).select("id, company, status, tier, fit_score"));
+    leads.push(...rows);
+    await must(db().from("events").update({ plan: { ...ev.plan, suggestions } }).eq("id", eventId));
+  }
+  if (!leads.length) return { summary: `Recommended ${suggestions.length} sponsors — press "Draft email" on one to write its pitch` + tag(off1), output: { suggestions } };
+
+  const { count, off: off2 } = await draftPitches(ev, leads);
+  return { summary: `Drafted ${count} pitch${count === 1 ? "" : "es"} — review them under Review & send · ${suggestions.length} more sponsors recommended` + tag(off1 || off2), output: { suggestions } };
 }
 
 /** Copy available club members (roster rows, no event) onto this event. Returns how many joined. */
@@ -329,9 +344,10 @@ export async function acceptSuggestion(eventId: string, company: string, email: 
     const ev = await getEvent(eventId);
     const s = (ev.plan?.suggestions ?? []).find((x: Suggestion) => x.company === company);
     if (!s) throw new Error("That suggestion is gone — run the Sponsorship agent again.");
-    await must(db().from("sponsors").insert({ event_id: eventId, company, contact_email: email, tier: s.tier, fit_score: s.fit_score }));
+    const lead = await must(db().from("sponsors").insert({ event_id: eventId, company, contact_email: email, tier: s.tier, fit_score: s.fit_score }).select("id, company, tier, fit_score").single());
     await must(db().from("events").update({ plan: { ...ev.plan, suggestions: ev.plan.suggestions.filter((x: Suggestion) => x !== s) } }).eq("id", eventId));
-    return `${company} added as a lead — run Sponsorship to draft its pitch`;
+    const { count, off } = await draftPitches(ev, [lead]);
+    return count ? `Draft ready for ${company} — read and edit it under Review & send${off ? " (offline mode)" : ""}` : `${company} added as a lead — run Sponsorship to draft its pitch`;
   });
 }
 
@@ -957,7 +973,8 @@ function pitchRecipient(email: string) {
 
 async function deliverPitch(s: { id: string; event_id: string; company: string; contact_email: string; pitch_subject: string; pitch_body: string }) {
   const to = pitchRecipient(s.contact_email);
-  const demo = to !== s.contact_email;
+  // Labelled as a demo copy when redirected, or when the lead was addressed to the demo inbox itself.
+  const demo = to !== s.contact_email || (!!process.env.DEMO_INBOX && s.contact_email === process.env.DEMO_INBOX.trim());
   await sendMail({
     to,
     subject: demo ? `[Demo → ${s.company}] ${s.pitch_subject}` : s.pitch_subject,
