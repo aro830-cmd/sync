@@ -2,7 +2,7 @@ import "server-only";
 import { createClient } from "@supabase/supabase-js";
 import { GoogleGenAI } from "@google/genai";
 import nodemailer from "nodemailer";
-import { withFallback, withKeys } from "@/lib/retry";
+import { geminiError, withFallback } from "@/lib/retry";
 import { cookies } from "next/headers";
 import { ADMIN_COOKIE, readToken } from "@/lib/token";
 
@@ -18,25 +18,40 @@ export function db() {
   });
 }
 
-// Used only when the configured model stays overloaded (503) after retries.
+// Used when the configured model stays overloaded (503) or out of quota (429).
 const FALLBACK_MODELS = ["gemini-3.6-flash", "gemini-3.5-flash"];
 
 /** Ask Gemini for JSON. The agent code, not the model, performs side effects. */
 export async function llm<T>(prompt: string): Promise<T> {
   const primary = process.env.GEMINI_MODEL || "gemini-3.8-flash";
-  // GEMINI_API_KEY_FALLBACK (optional) takes over when the main key's quota runs out.
+  const models = [primary, ...FALLBACK_MODELS.filter((m) => m !== primary)];
+  // GEMINI_API_KEY_FALLBACK (optional) is a second quota. Order: best model on every key, then the next model.
   const keys = [env("GEMINI_API_KEY"), process.env.GEMINI_API_KEY_FALLBACK].filter((k): k is string => !!k);
-  const res = await withKeys(keys, (apiKey) => {
-    const ai = new GoogleGenAI({ apiKey });
-    return withFallback([primary, ...FALLBACK_MODELS.filter((m) => m !== primary)], (model) =>
-      ai.models.generateContent({
+  const combos = models.flatMap((model) => keys.map((apiKey) => ({ model, apiKey })));
+  const attempt = () =>
+    withFallback(combos, ({ model, apiKey }) =>
+      new GoogleGenAI({ apiKey }).models.generateContent({
         model,
         contents: prompt,
         // A hung call would freeze the whole pipeline; 35s is well above a normal agent reply.
         config: { responseMimeType: "application/json", temperature: 0.4, abortSignal: AbortSignal.timeout(35_000) },
       }),
     );
-  });
+  let res;
+  try {
+    res = await attempt();
+  } catch (e) {
+    // Free-tier limits are mostly per minute: when every option is out of quota, wait once and go again.
+    if (!geminiError(e).quota) throw geminiError(e);
+    await new Promise((r) => setTimeout(r, 20_000));
+    try {
+      res = await attempt();
+    } catch (e2) {
+      const err = geminiError(e2);
+      if (err.quota) throw new Error(`Gemini is out of quota on ${keys.length === 1 ? "the API key" : "both API keys"} right now. Wait a minute and run the agent again, or add another key as GEMINI_API_KEY_FALLBACK in .env.local.`);
+      throw err;
+    }
+  }
   try {
     return JSON.parse(res.text ?? "") as T;
   } catch {

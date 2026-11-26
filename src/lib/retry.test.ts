@@ -1,6 +1,6 @@
 // Run: node src/lib/retry.test.ts
 import assert from "node:assert/strict";
-import { geminiError, withFallback, withKeys, withRetry } from "./retry.ts";
+import { geminiError, withFallback, withRetry } from "./retry.ts";
 
 const apiErr = (code: number, message: string) => new Error(JSON.stringify({ error: { code, message } }));
 
@@ -39,17 +39,10 @@ const timeout = () => Object.assign(new Error("aborted"), { name: "TimeoutError"
 assert.equal(geminiError(timeout()).status, 504);
 assert.equal(await withFallback(["slow", "fast"], async (m) => (m === "slow" ? Promise.reject(timeout()) : "fast ok"), [0]), "fast ok");
 
-// Out of quota on the first key → the fallback key answers; other errors don't switch keys.
-const used: string[] = [];
-assert.equal(await withKeys(["k1", "k2"], async (k) => (used.push(k), k === "k1" ? Promise.reject(apiErr(429, "You exceeded your current quota. x")) : "from k2")), "from k2");
-assert.deepEqual(used, ["k1", "k2"]);
-used.length = 0;
-await assert.rejects(withKeys(["k1", "k2"], async (k) => (used.push(k), Promise.reject(apiErr(400, "API key not valid. x")))), /API key not valid/);
-assert.deepEqual(used, ["k1"]);
-
-// A quota error is not retried or tried on other models — it goes straight to the next key.
+// A quota error isn't retried on the same option, but the next model/key gets a go.
 tried.length = 0;
-await assert.rejects(withFallback(["a", "b"], async (m) => (tried.push(m), Promise.reject(apiErr(429, "You exceeded your current quota. x"))), [0]), /quota/);
-assert.deepEqual(tried, ["a"]);
+assert.equal(await withFallback(["k1:a", "k2:a"], async (m) => (tried.push(m), m === "k1:a" ? Promise.reject(apiErr(429, "You exceeded your current quota. x")) : "from k2"), [0]), "from k2");
+assert.deepEqual(tried, ["k1:a", "k2:a"]);
+assert.equal(geminiError(apiErr(429, "You exceeded your current quota. x")).quota, true);
 
 console.log("retry ok");
