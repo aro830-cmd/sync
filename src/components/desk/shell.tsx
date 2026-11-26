@@ -1,5 +1,6 @@
 "use client";
 
+import { FoxMark } from "@/components/FoxMark";
 import Link from "next/link";
 import { motion } from "motion/react";
 import { useState, type ReactNode } from "react";
@@ -41,7 +42,7 @@ export function Shell({ head, groups, children, fox = scrollFrac }: { head?: Rea
 
       <aside className="sticky top-0 hidden h-screen w-[248px] shrink-0 flex-col border-r border-d-line bg-d-bg/80 px-3 py-4 backdrop-blur md:flex">
         <Link href="/dashboard" className="flex items-center gap-2.5 px-2 py-1">
-          <span className="grid size-7 place-items-center rounded-lg bg-gradient-to-br from-s1 to-s5 text-[13px] font-semibold text-white">R</span>
+          <FoxMark className="size-8 rounded-[10px] ring-1 ring-white/10" />
           <span className="text-[15px] font-semibold tracking-[-0.01em]">Relay</span>
           <span className="rounded-md border border-d-line px-1.5 py-0.5 text-[10px] font-medium text-d-ink3">DESK</span>
         </Link>
@@ -54,10 +55,10 @@ export function Shell({ head, groups, children, fox = scrollFrac }: { head?: Rea
             </div>
           ))}
         </nav>
-        {/* Mascot: walks and orbits as you scroll and switch sections. Multiply over the gradient = orange duotone. */}
+        {/* Mascot: walks and orbits as you scroll and switch sections. True-colour cut-out frames over the gradient. */}
         <div className="relative mb-3 h-[150px] overflow-hidden rounded-2xl border border-d-line" style={{ background: "radial-gradient(120% 90% at 50% 35%, #ff7a2e 0%, #c2410c 38%, #3b1407 75%, #120805 100%)" }}>
           <div className={`absolute inset-0 transition-opacity duration-700 ${foxOn ? "opacity-100" : "opacity-0"}`}>
-            <FoxCanvas progress={fox} mode="card" onReady={() => setFoxOn(true)} className="mix-blend-multiply [filter:grayscale(1)_contrast(1.25)_brightness(1.05)]" />
+            <FoxCanvas progress={fox} mode="card" onReady={() => setFoxOn(true)} />
           </div>
           <div aria-hidden className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent" />
           <div className="absolute bottom-2.5 left-3 text-[10px] font-medium uppercase tracking-[0.16em] text-white/80">Relay · on the move</div>
@@ -78,7 +79,7 @@ export function Shell({ head, groups, children, fox = scrollFrac }: { head?: Rea
         <div className="sticky top-0 z-30 border-b border-d-line bg-d-bg/85 backdrop-blur md:hidden">
           <div className="flex items-center justify-between px-4 pt-3">
             <Link href="/dashboard" className="flex items-center gap-2">
-              <span className="grid size-6 place-items-center rounded-md bg-gradient-to-br from-s1 to-s5 text-[11px] font-semibold text-white">R</span>
+              <FoxMark className="size-7 rounded-lg" />
               <span className="text-[14px] font-semibold">Relay</span>
             </Link>
             <form action={adminLogout}><button className="text-[12.5px] text-d-ink3">Log out</button></form>

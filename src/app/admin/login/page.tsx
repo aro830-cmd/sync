@@ -1,3 +1,4 @@
+import { FoxMark } from "@/components/FoxMark";
 import { Suspense } from "react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -12,7 +13,7 @@ export default function Page() {
       <aside className="relative flex flex-col justify-between gap-10 overflow-hidden bg-[#0b0806] px-6 py-8 text-ink md:px-14 md:py-12">
         <FoxBackdrop />
         <div className="relative flex items-center justify-between">
-          <Link href="/" className="font-[family-name:var(--font-archivo)] text-2xl font-semibold tracking-[-0.02em]">Relay<sup className="text-[.45em] text-signal">®</sup></Link>
+          <Link href="/" className="inline-flex items-center gap-2.5 font-[family-name:var(--font-archivo)] text-2xl font-semibold tracking-[-0.02em]"><FoxMark className="size-9 rounded-[11px]" />Relay<sup className="text-[.45em] text-signal">®</sup></Link>
           <span className="font-mono text-[10px] uppercase tracking-[0.2em] text-ink/60">Organiser desk</span>
         </div>
         <div className="relative">

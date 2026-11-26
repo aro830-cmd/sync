@@ -34,7 +34,8 @@ create table if not exists volunteers (
   event_id uuid references events on delete cascade,
   name text not null,
   email text not null,
-  skills text
+  skills text,
+  profile jsonb -- { dept, year, phone, bio, events_helped, availability }
 );
 
 create table if not exists tasks (
@@ -86,3 +87,38 @@ create table if not exists students (
   created_at timestamptz default now()
 );
 alter table students enable row level security;
+
+-- Later additions live in supabase/migrations/ — run them in order after this file (002 adds the sponsor CRM, volunteer profiles, roles, rewards, incidents, audit log).
+
+-- Added 26 Nov (migration volunteer_profiles) for databases created before it:
+alter table volunteers add column if not exists profile jsonb;
+
+-- Decision explainability & appeal trail (migration decisions_audit, 26 Nov).
+create table if not exists decisions (
+  id uuid primary key default gen_random_uuid(),
+  event_id uuid references events on delete cascade,
+  kind text not null,              -- shift | reroute | sponsor | plan
+  subject_id uuid,                 -- task / sponsor / event the outcome is about
+  subject text not null,
+  outcome text not null,
+  decided_by text not null,
+  why jsonb not null,              -- { rules: [{rule, ok, detail}], considered?: [], scores?: {}, notes?: [] }
+  status text not null default 'auto' check (status in ('auto','appealed','upheld','overridden','rejected')),
+  appeal jsonb,                    -- latest { type: dispute|override, by, message, proposal? }
+  created_at timestamptz default now()
+);
+create index if not exists decisions_event on decisions (event_id, created_at desc);
+create index if not exists decisions_subject on decisions (subject_id);
+create table if not exists decision_log (  -- append-only: every status transition
+  id uuid primary key default gen_random_uuid(),
+  decision_id uuid references decisions on delete cascade,
+  event_id uuid references events on delete cascade,
+  from_status text,
+  to_status text not null,
+  actor text not null,
+  note text,
+  created_at timestamptz default now()
+);
+create index if not exists decision_log_decision on decision_log (decision_id, created_at);
+alter table decisions enable row level security;
+alter table decision_log enable row level security;

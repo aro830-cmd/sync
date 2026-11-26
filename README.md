@@ -23,17 +23,29 @@ Next.js 16 + TypeScript · Tailwind v4 + motion · Gemini · Supabase Postgres �
    | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | Supabase → Project Settings → API keys (use the **secret** key) |
    | `GMAIL_USER`, `GMAIL_APP_PASSWORD` | Google Account → Security → App passwords |
    | `ADMIN_PASSCODE` | Any password; guards `/dashboard` |
+   | `GEMINI_API_KEY_FALLBACK` (optional) | Extra Gemini keys, comma-separated, used when the main key is out of quota |
+   | `DEMO_STUDENT_INBOX` (optional) | Student invites (with poster) to fictional `@example.com` accounts go here |
+   | `APP_URL` (optional) | Public base URL for links in emails and posters |
+   | `DEMO_INBOX` (optional) | Pitches to fictional `@example.com` sponsors are delivered here for demos |
+   | `RELAY_OFFLINE` (optional) | `1` = agents never call Gemini and use offline templates (safe demo mode) |
    | `SESSION_SECRET` | Any long random string; signs student login cookies |
 
-3. New Supabase project only: run `supabase/schema.sql` in the SQL editor, then optionally `supabase/seed.sql` for the demo event (open `/dashboard/de000000-0000-4000-a000-000000000001`).
-4. `npm run dev` → http://localhost:3000
+3. New Supabase project only: run `supabase/schema.sql` in the SQL editor, then optionally `supabase/seed.sql` for the demo event (open `/dashboard/de000000-0000-4000-a000-000000000001`). For demo history (6 past + 2 upcoming events, fictional sponsors, volunteer shifts): `node --env-file=.env.local supabase/seed-history.mjs` (re-runnable).
+4. **Database update (once, by the Supabase project owner — see `supabase/migrations/002_OWNER_PROMPT.md`):** open Supabase → SQL Editor → New query, paste `supabase/migrations/002_sponsor_crm_volunteers.sql`, press Run. It only adds tables/columns (sponsor CRM, volunteer profiles, mission roles, rewards, incidents, audit log), is safe to re-run, and copies existing sponsors and the club roster into the new tables. Until it's run, the features that need it show a "Database update needed" notice.
+5. `npm run dev` → http://localhost:3000
 
 ## Routes
 
 - `/` — landing
-- `/admin/login` → `/dashboard` — organiser desk (passcode = `ADMIN_PASSCODE`)
+- `/admin/login` → `/dashboard` — organiser home: brief composer with agent picker, lifetime stats, "Needs you" inbox, upcoming events, charts
+- `/dashboard/past` — past events, registered vs attended, loyal partners, "Run it again"
+- `/dashboard/research` — sponsor research: companies with sourced evidence (URL, date, confidence), transparent fit score with adjustable weights, compare view (needs migration 002)
+- `/dashboard/volunteers` — club volunteer roster: availability, preferred roles, events and hours served
+- `/dashboard/sponsors` — sponsor directory: every company pitched or partnered, contacts, notes, history per event
+- `/dashboard/agents/[agent]` — one page per agent: what it does, run it alone on any event, its history
+- `/dashboard/[id]` — event desk (`?s=<agent>` opens an agent page)
 - `/e/[id]` — public event registration
-- `/student/signup`, `/student/login`, `/student` — student portal (my events, one-tap registration, certificate download after check-in)
+- `/student/signup`, `/student/login`, `/student` — student portal: upcoming (registered + open), past events, my certificates
 
 ## Checks
 
@@ -41,11 +53,13 @@ Next.js 16 + TypeScript · Tailwind v4 + motion · Gemini · Supabase Postgres �
 npm run build && npm run lint
 node src/lib/schedule.test.ts   # volunteer scheduler self-check
 node src/lib/retry.test.ts      # Gemini retry/fallback self-check
+node src/lib/offline.test.ts    # offline-mode brief parser self-check
+node src/lib/fit.test.ts        # sponsor fit-score self-check
 ```
 
 ## Credits
 
-Fox mascot video, stills and the cast sheet are Higgsfield generations hotlinked from their CDN (never re-hosted); mp4box.js and Lenis load from jsDelivr at runtime.
+Fox mascot frames and stills are Higgsfield generations, background-removed offline (BiRefNet) into transparent WebPs in `public/fox/` so the fox keeps its true colours; the cast sheet is hotlinked from their CDN. Lenis loads from jsDelivr at runtime.
 
 ## Demo accounts
 

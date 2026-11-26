@@ -1,19 +1,28 @@
 "use client";
 
 import { AnimatePresence, motion } from "motion/react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState, useTransition, type ReactNode } from "react";
 import * as act from "@/app/actions";
-import { AGENTS, type AgentName } from "@/lib/agents";
-import type { Attendee, EventRow, Run, Sponsor, Task, Volunteer } from "@/lib/types";
+import { AGENTS, agentsFor, type AgentName } from "@/lib/agents";
+import { DEMO_LEADS, DEMO_VOLUNTEERS } from "@/lib/demo";
+import { parseSkills, roleOf } from "@/lib/roster";
+import { Deals, Metrics, effectiveStatus, type Crm } from "./Deals";
+import { AuditTrail, ConfirmButton, Incidents, MissionRoles } from "./Ops";
+import { isFree, type Decision, type DecisionLog, type Attendee, type EventRow, type Run, type Sponsor, type Task, type Volunteer } from "@/lib/types";
 import { BarList, LineChart, Meter, MilestoneTrack, SegmentedBar, ShiftTimeline, inr } from "./charts";
 import { Icon } from "./icons";
+import { Reroute } from "./Reroute";
+import { VolunteerCard } from "./VolunteerCard";
+import { AuditLogPage, DecisionsPage, Why, WhyProvider } from "./Why";
 import { Shell } from "./shell";
 import { Button, Card, Empty, Label, Stat, ToastProvider, ease, useToast } from "./ui";
 
-type Data = { event: EventRow; sponsors: Sponsor[]; volunteers: Volunteer[]; tasks: Task[]; attendees: Attendee[]; runs: Run[] };
+type Alum = { company: string; email: string; tier: string | null; event: string; times: number };
+type Data = { event: EventRow; sponsors: Sponsor[]; volunteers: Volunteer[]; tasks: Task[]; attendees: Attendee[]; runs: Run[]; alumni: Alum[]; demoInbox: string | null; invitable: number; studentInbox: string | null; crm: Crm; today: string; events: { id: string; name: string | null; date: string | null }[]; decisions: Decision[]; decisionLog: DecisionLog[]; saved: number };
 type Live = Partial<Record<AgentName, "running" | "done" | "failed">>;
-type Section = "overview" | AgentName;
+type Section = "overview" | AgentName | "reroute" | "decisions" | "audit";
 type AgentState = "idle" | "running" | "done" | "failed";
 
 const ago = (iso: string) => {
@@ -27,19 +36,27 @@ const DOT: Record<AgentState, string> = { idle: "bg-white/15", running: "bg-s2 a
 export function EventDesk(props: Data) {
   return (
     <ToastProvider>
-      <Desk {...props} />
+      <WhyProvider decisions={props.decisions} log={props.decisionLog} volunteers={props.volunteers} profiles={props.crm?.profiles ?? []}>
+        <Desk {...props} />
+      </WhyProvider>
     </ToastProvider>
   );
 }
 
 function Desk(d: Data) {
   const { event } = d;
-  const [section, setSection] = useState<Section>("overview");
+  const free = isFree(event);
+  const agents = agentsFor(free);
+  const params = useSearchParams();
+  // ?s=<agent> deep-links straight to an agent page (from the home inbox and the agent pages).
+  const [section, setSection] = useState<Section>(() => {
+    const s = params.get("s");
+    return s === "reroute" || s === "decisions" || s === "audit" || agents.some((a) => a.id === s) ? (s as Section) : "overview";
+  });
   const [live, setLive] = useState<Live>({});
   const [running, setRunning] = useState(false);
   const notify = useToast();
   const router = useRouter();
-  const params = useSearchParams();
   const started = useRef(false);
 
   async function run(list: AgentName[]) {
@@ -54,12 +71,14 @@ function Desk(d: Data) {
     setRunning(false);
   }
 
-  // Arriving from "New event" → run the whole pipeline once.
+  // Arriving from "New event" → run the agents picked in the composer once (?run=planner,comms; "1" = all).
   useEffect(() => {
-    if (params.get("run") === "1" && !started.current) {
+    const want = params.get("run");
+    if (want && !started.current) {
       started.current = true;
       router.replace(`/dashboard/${event.id}`);
-      run(AGENTS.map((a) => a.id));
+      const list = want === "1" ? AGENTS.map((a) => a.id) : AGENTS.map((a) => a.id).filter((a) => want.split(",").includes(a));
+      run(list);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -81,7 +100,7 @@ function Desk(d: Data) {
   );
 
   // Fox: each section owns a slice of the orbit; scrolling walks through that slice.
-  const order: Section[] = ["overview", ...AGENTS.map((a) => a.id)];
+  const order: Section[] = ["overview", ...agents.map((a) => a.id), "reroute", "decisions", "audit"];
   const fox = () => {
     const max = document.documentElement.scrollHeight - innerHeight;
     return (order.indexOf(section) + (max > 0 ? scrollY / max : 0)) / order.length;
@@ -92,11 +111,25 @@ function Desk(d: Data) {
       fox={fox}
       head={head}
       groups={[
-        { items: [{ key: "back", label: "All events", icon: Icon.events, href: "/dashboard" }] },
-        { items: [{ key: "overview", label: "Overview", icon: Icon.overview, active: section === "overview", onClick: () => go("overview") }] },
+        { items: [{ key: "back", label: "All events", icon: Icon.events, href: "/dashboard" }, { key: "past", label: "Past events", icon: Icon.past, href: "/dashboard/past" }] },
+        {
+          items: [
+            { key: "overview", label: "Overview", icon: Icon.overview, active: section === "overview", onClick: () => go("overview") },
+            { key: "reroute", label: "Chaos Re-Router", icon: Icon.reroute, active: section === "reroute", onClick: () => go("reroute"), dot: "bg-crit" },
+            {
+              key: "decisions",
+              label: "Why & appeals",
+              icon: Icon.why,
+              active: section === "decisions",
+              onClick: () => go("decisions"),
+              hint: d.decisions.some((x) => x.status === "appealed") ? `${d.decisions.filter((x) => x.status === "appealed").length} open` : undefined,
+            },
+            { key: "audit", label: "Audit log", icon: Icon.audit, active: section === "audit", onClick: () => go("audit"), hint: d.decisionLog.length + (d.crm?.audit.length ?? 0) ? String(d.decisionLog.length + (d.crm?.audit.length ?? 0)) : undefined },
+          ],
+        },
         {
           label: "Agents",
-          items: AGENTS.map((a) => ({ key: a.id, label: a.name, icon: Icon[a.id], active: section === a.id, onClick: () => go(a.id), dot: DOT[state(a.id)] })),
+          items: agents.map((a) => ({ key: a.id, label: a.name, icon: Icon[a.id], active: section === a.id, onClick: () => go(a.id), dot: DOT[state(a.id)] })),
         },
       ]}
     >
@@ -104,6 +137,12 @@ function Desk(d: Data) {
         <motion.div key={section} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: 0.28, ease }}>
           {section === "overview" ? (
             <Overview d={d} state={state} running={running} onRun={run} onGo={go} />
+          ) : section === "decisions" ? (
+            <DecisionsPage />
+          ) : section === "audit" ? (
+            <AuditLogPage actions={d.crm?.audit ?? []} />
+          ) : section === "reroute" ? (
+            <Reroute eventId={event.id} events={d.events} volunteers={d.volunteers} tasks={d.tasks} sponsors={d.sponsors} runs={d.runs} free={free} />
           ) : (
             <AgentPage d={d} agent={section} state={state(section)} running={running} onRun={() => run([section])} onGo={go} />
           )}
@@ -127,7 +166,7 @@ function useAction() {
   return [pending, go] as const;
 }
 
-function AddLines({ label, placeholder, onAdd }: { label: string; placeholder: string; onAdd: (t: string) => Promise<{ ok: boolean; message: string }> }) {
+function AddLines({ label, placeholder, onAdd, demo }: { label: string; placeholder: string; onAdd: (t: string) => Promise<{ ok: boolean; message: string }>; demo?: string }) {
   const [text, setText] = useState("");
   const [pending, go] = useAction();
   return (
@@ -142,7 +181,8 @@ function AddLines({ label, placeholder, onAdd }: { label: string; placeholder: s
           className="mt-2 w-full resize-y rounded-xl border border-d-line bg-black/30 px-3.5 py-3 font-mono text-[12.5px] leading-relaxed text-d-ink outline-none transition-colors placeholder:text-d-ink3 focus:border-white/25"
         />
       </label>
-      <div className="mt-2 flex justify-end">
+      <div className="mt-2 flex items-center justify-end gap-3">
+        {demo && <button type="button" onClick={() => setText(demo)} className="text-[12px] text-s1 hover:brightness-125">Use demo list</button>}
         <Button variant="ghost" pending={pending} disabled={!text.trim()} onClick={() => go(() => onAdd(text), () => setText(""))}>
           Add
         </Button>
@@ -172,11 +212,13 @@ type Step = { stage: string; text: string; go?: Section; agent?: AgentName; cta:
 function nextStep({ event, sponsors, volunteers, tasks, attendees }: Data): Step {
   const has = (s: Sponsor["status"]) => sponsors.filter((x) => x.status === s).length;
   const checked = attendees.filter((a) => a.checked_in);
-  if (!event.plan?.budget_split) return { stage: "Plan", text: "Let the Planner turn the brief into a budget, sponsor tiers and a timeline.", agent: "planner", cta: "Run Planner" };
+  if (!event.plan?.timeline) return { stage: "Plan", text: "Let the Planner turn the brief into a plan — budget and sponsor tiers for funded events, a timeline for every event.", agent: "planner", cta: "Run Planner" };
+  if (isFree(event)) return freeStep({ event, sponsors, volunteers, tasks, attendees } as Data);
+  if (!sponsors.length && event.plan?.suggestions?.length) return { stage: "Sponsors", text: `The agent recommended ${event.plan.suggestions.length} companies. Add a contact email to the ones you want to pitch.`, go: "sponsorship", cta: "Review recommendations" };
   if (!sponsors.length) return { stage: "Sponsors", text: "Add the companies you want to approach — the Sponsorship agent writes each pitch.", go: "sponsorship", cta: "Add sponsor leads" };
   if (has("lead")) return { stage: "Sponsors", text: `${has("lead")} new lead${has("lead") > 1 ? "s" : ""} waiting — draft tailored pitches for them.`, agent: "sponsorship", cta: "Run Sponsorship" };
   if (has("drafted")) return { stage: "Sponsors", text: `${has("drafted")} pitch${has("drafted") > 1 ? "es are" : " is"} drafted. Read, edit if needed, then approve to send.`, go: "sponsorship", cta: "Review pitches" };
-  if (!volunteers.length) return { stage: "Logistics", text: "Add your volunteers and their skills so the day can be scheduled.", go: "logistics", cta: "Add volunteers" };
+  if (!volunteers.length) return { stage: "Logistics", text: "Staff the day — Logistics picks available club members from your roster and gives each a role.", agent: "logistics", cta: "Run Logistics" };
   if (!tasks.length) return { stage: "Logistics", text: "Build the run-of-show and assign volunteers with zero clashes.", agent: "logistics", cta: "Run Logistics" };
   if (!event.plan?.comms) return { stage: "Comms", text: "Draft the announcement and attendee reminder.", agent: "comms", cta: "Run Comms" };
   if (!attendees.length) return { stage: "Registration", text: "Share the announcement — registrations appear here as they come in.", go: "comms", cta: "Open registrations" };
@@ -184,6 +226,18 @@ function nextStep({ event, sponsors, volunteers, tasks, attendees }: Data): Step
   if (checked.some((a) => !a.certificate_sent)) return { stage: "After the event", text: `${checked.filter((a) => !a.certificate_sent).length} checked-in attendee(s) still need a certificate.`, go: "comms", cta: "Send certificates" };
   if (!event.summary) return { stage: "Report", text: "Write the sponsor report from real attendance and confirmed partners.", agent: "reporting", cta: "Run Reporting" };
   return { stage: "Wrap-up", text: has("confirmed") ? "Report ready — email it to your confirmed partners." : "All stages done. Confirm partners to send them the report.", go: has("confirmed") ? "reporting" : "sponsorship", cta: has("confirmed") ? "Open report" : "Open sponsors" };
+}
+
+function freeStep({ event, volunteers, tasks, attendees }: Data): Step {
+  const checked = attendees.filter((a) => a.checked_in);
+  if (!volunteers.length) return { stage: "Logistics", text: "Free event — no sponsors needed. Logistics staffs the day from your club roster.", agent: "logistics", cta: "Run Logistics" };
+  if (!tasks.length) return { stage: "Logistics", text: "Build the run-of-show and assign volunteers with zero clashes.", agent: "logistics", cta: "Run Logistics" };
+  if (!event.plan?.comms) return { stage: "Comms", text: "Draft the announcement and attendee reminder.", agent: "comms", cta: "Run Comms" };
+  if (!attendees.length) return { stage: "Registration", text: "Share the announcement — registrations appear here as they come in.", go: "comms", cta: "Open registrations" };
+  if (!checked.length) return { stage: "Event day", text: `${attendees.length} registered. Send a reminder, then check people in at the door.`, go: "comms", cta: "Open check-in" };
+  if (checked.some((a) => !a.certificate_sent)) return { stage: "After the event", text: `${checked.filter((a) => !a.certificate_sent).length} checked-in attendee(s) still need a certificate.`, go: "comms", cta: "Send certificates" };
+  if (!event.summary) return { stage: "Report", text: "Write the club report from real attendance.", agent: "reporting", cta: "Run Reporting" };
+  return { stage: "Wrap-up", text: "All stages done. Download the report PDF for your department.", go: "reporting", cta: "Open report" };
 }
 
 function NextStep({ step, busy, onRun, onGo }: { step: Step; busy: boolean; onRun: (a: AgentName[]) => void; onGo: (s: Section) => void }) {
@@ -213,10 +267,170 @@ function NextStep({ step, busy, onRun, onGo }: { step: Step; busy: boolean; onRu
   );
 }
 
+// ───────────── edit details ─────────────
+
+/** Change the brief, budget, date and the rest by hand, then optionally re-run the agents you pick. */
+function EditDetails({ event, running, onRun }: { event: EventRow; running: boolean; onRun: (a: AgentName[]) => void }) {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const init = {
+    brief: event.brief,
+    name: event.name ?? "",
+    date: event.date ?? "",
+    venue: event.venue ?? "",
+    budget: event.budget ?? 0,
+    expected_attendees: event.expected_attendees ?? 100,
+    kind: (event.plan?.kind ?? "funded") as "funded" | "free",
+  };
+  const [f, setF] = useState(init);
+  const [picked, setPicked] = useState<Set<AgentName>>(new Set());
+  const [pending, go] = useAction();
+  const set = <K extends keyof typeof init>(k: K, v: (typeof init)[K]) => setF((x) => ({ ...x, [k]: v }));
+  // Re-planning is what rescales the budget split and tiers, so suggest it when those inputs change.
+  const replan = f.budget !== init.budget || f.kind !== init.kind || f.date !== init.date || f.brief !== init.brief || f.expected_attendees !== init.expected_attendees;
+  const agents = agentsFor(f.kind === "free");
+  const list = agents.filter((a) => picked.has(a.id)).map((a) => a.id);
+  const field = "h-10 w-full rounded-lg border border-d-line bg-black/30 px-3 text-[13.5px] text-d-ink outline-none transition-colors focus:border-white/25";
+  const toggle = (a: AgentName) =>
+    setPicked((p) => {
+      const n = new Set(p);
+      if (n.has(a)) n.delete(a);
+      else n.add(a);
+      return n;
+    });
+
+  const show = () => {
+    setF(init);
+    setPicked(new Set());
+    setOpen(true);
+  };
+  const save = (run: boolean) =>
+    go(
+      () => act.updateEvent(event.id, f),
+      () => {
+        setOpen(false);
+        router.refresh();
+        if (run && list.length) onRun(list);
+      },
+    );
+
+  return (
+    <>
+      <Button variant="ghost" onClick={show} disabled={running}>
+        <svg viewBox="0 0 24 24" className="size-3.5" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round"><path d="M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4" /></svg>
+        Edit details
+      </Button>
+      <AnimatePresence>
+        {open && (
+          <motion.div className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4 backdrop-blur-sm" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} onClick={() => setOpen(false)}>
+            <motion.div
+              role="dialog"
+              aria-modal="true"
+              aria-label="Edit event details"
+              onClick={(e) => e.stopPropagation()}
+              onKeyDown={(e) => e.key === "Escape" && setOpen(false)}
+              initial={{ opacity: 0, y: 16, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 8, scale: 0.98 }}
+              transition={{ duration: 0.3, ease }}
+              className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-d-line bg-d-panel p-6 shadow-[0_40px_120px_-30px_rgba(0,0,0,.9)]"
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h2 className="text-[18px] font-semibold">Edit event details</h2>
+                  <p className="mt-1 text-[12.5px] text-d-ink2">What you set here sticks — a Planner re-run plans around it instead of overwriting it.</p>
+                </div>
+                <button onClick={() => setOpen(false)} aria-label="Close" className="text-d-ink3 hover:text-d-ink">✕</button>
+              </div>
+
+              <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                <label className="sm:col-span-2">
+                  <span className="mb-1.5 block text-[12px] text-d-ink2">One-line brief</span>
+                  <input value={f.brief} onChange={(e) => set("brief", e.target.value)} className={field} />
+                </label>
+                <label>
+                  <span className="mb-1.5 block text-[12px] text-d-ink2">Event name</span>
+                  <input value={f.name} onChange={(e) => set("name", e.target.value)} className={field} placeholder="Set by the Planner" />
+                </label>
+                <label>
+                  <span className="mb-1.5 block text-[12px] text-d-ink2">Date</span>
+                  <input type="date" value={f.date} onChange={(e) => set("date", e.target.value)} className={`${field} [color-scheme:dark]`} />
+                </label>
+                <label className="sm:col-span-2">
+                  <span className="mb-1.5 block text-[12px] text-d-ink2">Venue</span>
+                  <input value={f.venue} onChange={(e) => set("venue", e.target.value)} className={field} placeholder="Set by the Planner" />
+                </label>
+                <div>
+                  <span className="mb-1.5 block text-[12px] text-d-ink2">Type</span>
+                  <div className="grid h-10 grid-cols-2 rounded-lg border border-d-line bg-black/30 p-1">
+                    {(["funded", "free"] as const).map((k) => (
+                      <button key={k} type="button" onClick={() => set("kind", k)} className={`relative rounded-md text-[13px] capitalize transition-colors ${f.kind === k ? "text-d-ink" : "text-d-ink3 hover:text-d-ink2"}`}>
+                        {f.kind === k && <motion.span layoutId="kind-pill" className={`absolute inset-0 rounded-md ${k === "free" ? "bg-s3/20" : "bg-s1/20"}`} transition={{ duration: 0.25, ease }} />}
+                        <span className="relative">{k}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <label>
+                  <span className="mb-1.5 block text-[12px] text-d-ink2">Budget (₹)</span>
+                  <input type="number" min={0} step={1000} disabled={f.kind === "free"} value={f.kind === "free" ? 0 : f.budget} onChange={(e) => set("budget", Number(e.target.value))} className={`${field} disabled:opacity-40`} />
+                </label>
+                <label>
+                  <span className="mb-1.5 block text-[12px] text-d-ink2">Expected attendees</span>
+                  <input type="number" min={1} value={f.expected_attendees} onChange={(e) => set("expected_attendees", Number(e.target.value))} className={field} />
+                </label>
+              </div>
+
+              <div className="mt-6 rounded-xl border border-d-line bg-black/20 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-[13px] font-medium">Re-run agents after saving</span>
+                  {replan && !picked.has("planner") && (
+                    <button type="button" onClick={() => toggle("planner")} className="text-[12px] text-s1 hover:brightness-125">
+                      Budget or plan changed — add Planner
+                    </button>
+                  )}
+                </div>
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {agents.map((a) => {
+                    const on = picked.has(a.id);
+                    return (
+                      <button
+                        key={a.id}
+                        type="button"
+                        aria-pressed={on}
+                        onClick={() => toggle(a.id)}
+                        className={`flex h-8 items-center gap-2 rounded-full border px-3 text-[12.5px] transition-colors ${on ? "border-s1/50 bg-s1/15 text-d-ink" : "border-d-line text-d-ink3 hover:text-d-ink2"}`}
+                      >
+                        <span className="[&>svg]:size-3.5">{Icon[a.id]}</span>
+                        {a.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="mt-6 flex flex-wrap justify-end gap-2">
+                <span className="mr-auto"><ConfirmButton variant="ghost" confirm="Delete this event and everything in it?" onConfirm={() => act.deleteEvent(event.id)}>Delete event</ConfirmButton></span>
+                <Button variant="ghost" onClick={() => setOpen(false)}>Cancel</Button>
+                <Button variant="ghost" pending={pending} onClick={() => save(false)}>Save only</Button>
+                <Button variant="accent" pending={pending} disabled={!list.length} onClick={() => save(true)}>
+                  Save & run {list.length || ""} agent{list.length === 1 ? "" : "s"} →
+                </Button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </>
+  );
+}
+
 // ───────────── overview ─────────────
 
 function Overview({ d, state, running, onRun, onGo }: { d: Data; state: (a: AgentName) => AgentState; running: boolean; onRun: (a: AgentName[]) => void; onGo: (s: Section) => void }) {
-  const { event, sponsors, volunteers, tasks, attendees, runs } = d;
+  const { event, sponsors, volunteers, tasks, attendees, runs, crm, today } = d;
+  const free = isFree(event);
+  const agents = agentsFor(free);
   const notify = useToast();
   const confirmed = sponsors.filter((s) => s.status === "confirmed");
   const raised = confirmed.reduce((sum, s) => sum + (event.plan?.tiers?.find((t) => t.name === s.tier)?.amount ?? 0), 0);
@@ -227,16 +441,20 @@ function Overview({ d, state, running, onRun, onGo }: { d: Data; state: (a: Agen
   return (
     <>
       <PageHead
-        eyebrow={<><span className="size-1.5 rounded-full bg-good" />Event overview</>}
+        eyebrow={<><span className="size-1.5 rounded-full bg-good" />Event overview <Why subject={event.id} /><span className="ml-2 rounded-md border border-d-line px-1.5 py-0.5 text-[11px] text-d-ink3" title="Near-identical prompts with the same facts reuse a stored answer (local vector match, no API call)">Vector memory · {d.saved} Gemini call{d.saved === 1 ? "" : "s"} saved</span></>}
         title={event.name ?? <span className="text-d-ink3">Planning…</span>}
         sub={[event.theme, event.venue, event.expected_attendees ? `${event.expected_attendees} expected` : null].filter(Boolean).join(" · ")}
         actions={
           <>
+            <EditDetails event={event} running={running} onRun={onRun} />
+            <Button variant="ghost" onClick={() => onGo("reroute")} className="border-crit/40 text-crit hover:bg-crit/10">
+              {Icon.reroute} Trigger disruption
+            </Button>
             <Button variant="ghost" onClick={() => navigator.clipboard.writeText(location.origin + regUrl).then(() => notify(true, "Registration link copied"))}>
               Copy registration link
             </Button>
-            <Button pending={running} onClick={() => onRun(AGENTS.map((a) => a.id))}>
-              {running ? "Agents working" : "Run all agents"}
+            <Button pending={running} onClick={() => onRun(agents.map((a) => a.id))}>
+              {running ? "Agents working" : `Run all ${agents.length} agents`}
             </Button>
           </>
         }
@@ -245,8 +463,17 @@ function Overview({ d, state, running, onRun, onGo }: { d: Data; state: (a: Agen
       <NextStep step={nextStep(d)} busy={running} onRun={onRun} onGo={onGo} />
 
       <div className="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
+        {free ? (
+          <>
+            <Stat label="Entry" value="Free" hint="No budget, no sponsors" dot="bg-s3" />
+            <Stat label="Seats" value={event.expected_attendees ?? "—"} hint={<span className="block"><span className="mb-2 block">{attendees.length} taken</span><Meter value={attendees.length} max={event.expected_attendees || 1} color="bg-s1" track="bg-s1/15" height="h-1.5" /></span>} dot="bg-s1" />
+          </>
+        ) : (
+          <>
         <Stat label="Budget" value={inr(event.budget)} hint={`${event.plan?.budget_split?.length ?? 0} cost heads`} dot="bg-s1" />
         <Stat label="Sponsorship raised" value={inr(raised)} hint={<span className="block"><span className="mb-2 block">{confirmed.length} of {sponsors.length} partners confirmed</span><Meter value={raised} max={event.budget ?? 1} color="bg-s2" track="bg-s2/15" height="h-1.5" /></span>} dot="bg-s2" />
+          </>
+        )}
         <Stat label="Registered" value={attendees.length} hint={<span className="block"><span className="mb-2 block">{checked} checked in</span><Meter value={checked} max={attendees.length || 1} color="bg-s3" track="bg-s3/15" height="h-1.5" /></span>} dot="bg-s3" />
         <Stat label="Volunteer shifts" value={tasks.length} hint={`${volunteers.length} volunteers · ${open ? `${open} open` : "all covered"}`} dot="bg-s4" />
       </div>
@@ -254,10 +481,10 @@ function Overview({ d, state, running, onRun, onGo }: { d: Data; state: (a: Agen
       <div className="mt-5">
         <div className="mb-3 flex items-baseline justify-between">
           <Label>Agent pipeline</Label>
-          <span className="text-[12px] text-d-ink3">{AGENTS.filter((a) => state(a.id) === "done").length}/5 complete</span>
+          <span className="text-[12px] text-d-ink3">{agents.filter((a) => state(a.id) === "done").length}/{agents.length} complete</span>
         </div>
-        <ol className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-          {AGENTS.map((a, i) => {
+        <ol className={`grid gap-3 sm:grid-cols-2 ${free ? "lg:grid-cols-4" : "lg:grid-cols-5"}`}>
+          {agents.map((a, i) => {
             const st = state(a.id);
             const last = runs.find((r) => r.agent === a.id);
             return (
@@ -288,6 +515,8 @@ function Overview({ d, state, running, onRun, onGo }: { d: Data; state: (a: Agen
         </ol>
       </div>
 
+      {crm && <Command d={d} crm={crm} today={today} onGo={onGo} />}
+
       <div className="mt-5 grid gap-3 lg:grid-cols-[1.6fr_1fr]">
         <Card title="Registrations" sub="Cumulative sign-ups since the page went live">
           <LineChart points={cumulative(attendees)} label="registered" />
@@ -312,7 +541,44 @@ function Overview({ d, state, running, onRun, onGo }: { d: Data; state: (a: Agen
           )}
         </Card>
       </div>
+      {crm && (
+        <div className="mt-5 grid gap-3 lg:grid-cols-2">
+          <Incidents event={event} crm={crm} />
+          <AuditTrail crm={crm} />
+        </div>
+      )}
     </>
+  );
+}
+
+/** Live command centre: payments, volunteer coverage, overdue items, open incidents and pending approvals at a glance. */
+function Command({ d, crm, today, onGo }: { d: Data; crm: NonNullable<Crm>; today: string; onGo: (s: Section) => void }) {
+  const committed = crm.payments.reduce((s, p) => s + p.amount, 0);
+  const received = crm.payments.reduce((s, p) => s + p.received_amount, 0);
+  const overduePay = crm.payments.filter((p) => effectiveStatus(p, today) === "overdue").length;
+  const overdueDel = crm.deliverables.filter((x) => !x.done && x.due_date && x.due_date < today).length;
+  const filled = crm.requests.filter((r) => r.status === "accepted" || r.status === "completed").length;
+  const waiting = crm.requests.filter((r) => r.status === "requested" && r.reason?.startsWith("Applied by")).length;
+  const openShifts = d.tasks.filter((t) => !t.volunteer_id).length;
+  const incidents = crm.incidents.filter((i) => i.status === "open").length;
+  const drafted = d.sponsors.filter((s) => s.status === "drafted").length;
+  const tiles: { label: string; value: string; hint: string; warn: boolean; go: Section }[] = [
+    { label: "Payments", value: committed ? `${Math.round((received / committed) * 100)}%` : "—", hint: committed ? `${inr(received)} of ${inr(committed)}${overduePay ? ` · ${overduePay} overdue` : ""}` : "No milestones yet", warn: overduePay > 0, go: "sponsorship" },
+    { label: "Mission roles", value: `${filled}/${crm.roles.length}`, hint: `${openShifts ? `${openShifts} open shifts · ` : ""}${waiting} application${waiting === 1 ? "" : "s"} waiting`, warn: waiting > 0 || openShifts > 0, go: "logistics" },
+    { label: "Overdue", value: String(overduePay + overdueDel), hint: `${overduePay} payments · ${overdueDel} deliverables`, warn: overduePay + overdueDel > 0, go: "sponsorship" },
+    { label: "Pending approvals", value: String(drafted + waiting), hint: `${drafted} pitches · ${waiting} role applications`, warn: drafted + waiting > 0, go: drafted ? "sponsorship" : "logistics" },
+    { label: "Open incidents", value: String(incidents), hint: incidents ? "Resolve them below" : "All clear", warn: incidents > 0, go: "overview" },
+  ];
+  return (
+    <div className="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-5">
+      {tiles.map((t) => (
+        <button key={t.label} onClick={() => t.go !== "overview" && onGo(t.go)} className={`rounded-2xl border bg-d-panel p-4 text-left transition-colors hover:border-white/20 ${t.warn ? "border-s1/40" : "border-d-line"}`}>
+          <div className="flex items-center gap-2 text-[12px] text-d-ink2"><span className={`size-1.5 rounded-full ${t.warn ? "bg-s1" : "bg-good"}`} />{t.label}</div>
+          <div className="mt-2 text-[22px] leading-none font-semibold tabular-nums">{t.value}</div>
+          <div className="mt-1.5 text-[11.5px] text-d-ink3">{t.hint}</div>
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -323,17 +589,10 @@ function cumulative(attendees: Attendee[]) {
 
 // ───────────── agent pages ─────────────
 
-const AGENT_SUB: Record<AgentName, string> = {
-  planner: "Turns the one-line brief into a budget, sponsor tiers and a timeline.",
-  sponsorship: "Scores each sponsor lead for fit and drafts a tailored pitch. Nothing is sent until you approve.",
-  logistics: "Writes the run-of-show and assigns volunteers to shifts — guaranteed zero clashes.",
-  comms: "Opens registration, drafts the announcement and reminder, and runs check-in and certificates.",
-  reporting: "Writes the sponsor report from real attendance and confirmed partners, as a PDF.",
-};
-
 function AgentPage({ d, agent, state, running, onRun, onGo }: { d: Data; agent: AgentName; state: AgentState; running: boolean; onRun: () => void; onGo: (s: Section) => void }) {
-  const a = AGENTS.find((x) => x.id === agent)!;
-  const i = AGENTS.indexOf(a);
+  const list = agentsFor(isFree(d.event));
+  const a = list.find((x) => x.id === agent)!;
+  const i = list.indexOf(a);
   const last = d.runs.find((r) => r.agent === agent);
   return (
     <>
@@ -341,19 +600,19 @@ function AgentPage({ d, agent, state, running, onRun, onGo }: { d: Data; agent: 
         eyebrow={
           <>
             <span className="grid size-6 place-items-center rounded-md border border-d-line bg-white/[0.04] text-d-ink2 [&>svg]:size-3.5">{Icon[agent]}</span>
-            Agent 0{i + 1} of 5
+            Agent 0{i + 1} of {list.length}
             <span className="mx-1 text-d-ink3/50">·</span>
             <span className={`size-1.5 rounded-full ${DOT[state]}`} />
             {state === "idle" ? "Not run yet" : state === "running" ? "Working…" : state === "failed" ? "Last run failed" : `Last run ${last ? ago(last.created_at) : ""}`}
           </>
         }
         title={`${a.name} agent`}
-        sub={AGENT_SUB[agent]}
+        sub={a.about}
         actions={
           <>
-            {i < 4 && (
-              <Button variant="ghost" onClick={() => onGo(AGENTS[i + 1].id)}>
-                Next: {AGENTS[i + 1].name} →
+            {i < list.length - 1 && (
+              <Button variant="ghost" onClick={() => onGo(list[i + 1].id)}>
+                Next: {list[i + 1].name} →
               </Button>
             )}
             <Button pending={running && state === "running"} disabled={running} onClick={onRun}>
@@ -379,18 +638,44 @@ function Planner({ event }: Data) {
   const plan = event.plan ?? {};
   const split = plan.budget_split ?? [];
   const days = event.date ? Math.ceil((Date.parse(event.date) - now) / 86_400_000) : null;
-  if (!split.length) return <Empty>Run the Planner to split the budget, set sponsor tiers and build the timeline.</Empty>;
+  const free = isFree(event);
+  if (!plan.timeline?.length) return <Empty>Run the Planner to build the plan — budget and sponsor tiers for funded events, a timeline for every event.</Empty>;
   return (
     <div className="space-y-3">
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Stat label="Total budget" value={inr(event.budget)} dot="bg-s1" />
+        {free ? <Stat label="Entry" value="Free" hint="The Planner marked this a free event" dot="bg-s3" /> : <Stat label="Total budget" value={inr(event.budget)} dot="bg-s1" />}
         <Stat label="Expected attendees" value={event.expected_attendees ?? "—"} hint={event.budget && event.expected_attendees ? `${inr(event.budget / event.expected_attendees)} per head` : undefined} />
-        <Stat label="Sponsor tiers" value={plan.tiers?.length ?? 0} hint={plan.tiers?.length ? `${inr(Math.max(...plan.tiers.map((t) => t.amount)))} top tier` : undefined} />
+        {free ? <Stat label="Milestones" value={plan.timeline.length} hint="From today to event day" /> : <Stat label="Sponsor tiers" value={plan.tiers?.length ?? 0} hint={plan.tiers?.length ? `${inr(Math.max(...plan.tiers.map((t) => t.amount)))} top tier` : undefined} />}
         <Stat label="Days to event" value={days == null ? "—" : days < 0 ? "Done" : days} hint={longDate(event.date)} />
       </div>
-      <Card title="Budget split" sub={`${inr(event.budget)} across ${split.length} cost heads`}>
-        <SegmentedBar parts={split.map((b) => ({ label: b.head, value: b.amount }))} />
+      <Card title="Event details" sub={<>What the Planner decided from your brief <Why subject={event.id} /></>}>
+        <dl className="grid gap-x-6 gap-y-4 sm:grid-cols-2 lg:grid-cols-4">
+          {[
+            ["Event", event.name],
+            ["Theme", event.theme],
+            ["Date", longDate(event.date)],
+            ["Venue", event.venue],
+            ["Type", free ? "Free event" : "Funded event"],
+            ["Budget", free ? "₹0" : inr(event.budget)],
+            ["Expected", event.expected_attendees ? `${event.expected_attendees} attendees` : null],
+            ["Milestones", `${plan.timeline.length} steps`],
+          ].map(([k, v]) => (
+            <div key={k}>
+              <dt className="text-[11.5px] text-d-ink3">{k}</dt>
+              <dd className="mt-0.5 text-[13.5px] text-d-ink">{v || "—"}</dd>
+            </div>
+          ))}
+        </dl>
+        <div className="mt-4 rounded-lg border border-d-line bg-black/20 px-3.5 py-2.5 text-[13px] text-d-ink2">
+          <span className="text-d-ink3">Brief · </span>
+          {event.brief}
+        </div>
       </Card>
+      {!!split.length && (
+        <Card title="Budget split" sub={`${inr(event.budget)} across ${split.length} cost heads`}>
+          <SegmentedBar parts={split.map((b) => ({ label: b.head, value: b.amount }))} />
+        </Card>
+      )}
       <div className="grid gap-3 lg:grid-cols-[1.3fr_1fr]">
         {!!plan.timeline?.length && (
           <Card title="Timeline" sub="Milestones from today to event day">
@@ -405,6 +690,16 @@ function Planner({ event }: Data) {
             </ol>
           </Card>
         )}
+        {free ? (
+          <Card title="Why it's free" sub="No budget, no sponsors — fewer agents to run">
+            <ul className="space-y-2.5 text-[13px] text-d-ink2">
+              <li className="flex gap-2"><span className="text-s3">✓</span>Sponsorship is skipped entirely</li>
+              <li className="flex gap-2"><span className="text-s3">✓</span>Logistics, Comms and Reporting run as usual</li>
+              <li className="flex gap-2"><span className="text-s3">✓</span>The report goes to your club and department, not sponsors</li>
+            </ul>
+            <p className="mt-4 text-[12.5px] text-d-ink3">Wrong call? Edit the brief to include a budget (e.g. “₹20k”) and re-run the Planner.</p>
+          </Card>
+        ) : (
         <Card title="Sponsor tiers" sub="What each partner level pays and gets">
           <div className="space-y-2.5">
             {(plan.tiers ?? []).map((t, i) => (
@@ -423,6 +718,7 @@ function Planner({ event }: Data) {
             ))}
           </div>
         </Card>
+        )}
       </div>
     </div>
   );
@@ -437,7 +733,7 @@ const NEXT: Partial<Record<Sponsor["status"], Sponsor["status"][]>> = {
   declined: ["replied"],
 };
 
-function Sponsors({ event, sponsors }: Data) {
+function Sponsors({ event, sponsors, alumni, demoInbox, crm, today }: Data) {
   const [pending, go] = useAction();
   const [open, setOpen] = useState<string | null>(null);
   const n = (...s: Sponsor["status"][]) => sponsors.filter((x) => s.includes(x.status)).length;
@@ -513,6 +809,7 @@ function Sponsors({ event, sponsors }: Data) {
                           </div>
                           {s.tier && <div className="mt-0.5 text-[11px] text-d-ink3">{s.tier}{tierAmt(s) ? ` · ${inr(tierAmt(s))}` : ""}</div>}
                         </button>
+                        <div className="mt-1 empty:hidden"><Why subject={s.id} /></div>
                         {!!NEXT[c]?.length && (
                           <div className="mt-2 flex flex-wrap gap-1">
                             {NEXT[c]!.map((nx) => (
@@ -545,14 +842,146 @@ function Sponsors({ event, sponsors }: Data) {
         </AnimatePresence>
       </Card>
 
+      <Review eventId={event.id} drafts={sponsors.filter((s) => s.status === "drafted")} tierAmt={tierAmt} demoInbox={demoInbox} />
+
+      <Deals event={event} sponsors={sponsors} crm={crm} today={today} />
+
+      <Suggestions event={event} demoInbox={demoInbox} />
+      <PastPartners eventId={event.id} alumni={alumni.filter((a) => !sponsors.some((s) => s.company === a.company))} />
+
       <Card title="Add sponsor leads" sub="One company per line — the agent drafts a pitch for each new lead">
-        <AddLines label="Company, email" placeholder="Atlassian, university@atlassian.com" onAdd={(t) => act.addLeads(event.id, t)} />
+        <AddLines label="Company, email" placeholder="Atlassian, university@atlassian.com" onAdd={(t) => act.addLeads(event.id, t)} demo={DEMO_LEADS} />
       </Card>
     </div>
   );
 }
 
-function Pitch({ eventId, s, onClose }: { eventId: string; s: Sponsor; onClose: () => void }) {
+/** Drafted pitches as full email previews: read, edit, then send one by one or all at once. Nothing sends on its own. */
+function Review({ eventId, drafts, tierAmt, demoInbox }: { eventId: string; drafts: Sponsor[]; tierAmt: (s: Sponsor) => number; demoInbox: string | null }) {
+  const [pending, go] = useAction();
+  const [i, setI] = useState(0);
+  if (!drafts.length) return null;
+  const s = drafts[Math.min(i, drafts.length - 1)];
+  const demo = !!demoInbox && (s.contact_email === demoInbox || /@([\w-]+\.)*example\.com$/i.test(s.contact_email));
+  return (
+    <Card
+      title={`Review & send · ${drafts.length} pitch${drafts.length === 1 ? "" : "es"} waiting`}
+      sub="Written by the Sponsorship agent. Read each one, edit anything, then send — nothing goes out until you click."
+      action={
+        <ConfirmButton pending={pending} confirm={`Email all ${drafts.length} sponsors now?`} onConfirm={() => go(() => act.sendPitches(eventId))}>
+          Approve & send all {drafts.length}
+        </ConfirmButton>
+      }
+    >
+      <div className="grid gap-3 lg:grid-cols-[240px_1fr]">
+        <ul className="flex gap-1.5 overflow-x-auto lg:flex-col lg:overflow-visible">
+          {drafts.map((d, k) => (
+            <li key={d.id}>
+              <button
+                onClick={() => setI(k)}
+                className={`w-full min-w-[180px] rounded-xl border px-3 py-2.5 text-left transition-colors ${d.id === s.id ? "border-s1/50 bg-s1/10" : "border-d-line hover:border-white/20"}`}
+              >
+                <span className="block truncate text-[13.5px] font-medium">{d.company}</span>
+                <span className="block text-[11.5px] text-d-ink3">{d.tier ?? "—"}{tierAmt(d) ? ` · ${inr(tierAmt(d))}` : ""}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+        <div className="rounded-xl border border-d-line bg-black/25">
+          <div className="space-y-1 border-b border-d-line px-5 py-3 text-[12.5px]">
+            <div className="flex gap-3"><span className="w-14 text-d-ink3">To</span><span className="truncate text-d-ink">{s.company} &lt;{s.contact_email}&gt;</span></div>
+            {demo && <div className="flex gap-3"><span className="w-14 text-d-ink3">Delivers</span><span className="truncate text-s3">{demoInbox} (demo inbox — this sponsor is fictional)</span></div>}
+            <div className="flex gap-3"><span className="w-14 text-d-ink3">From</span><span className="text-d-ink2">Your club Gmail account</span></div>
+          </div>
+          <div className="p-5">
+            <Pitch key={s.id} eventId={eventId} s={s} onClose={() => {}} hideClose />
+            <div className="mt-5 flex justify-end gap-2 border-t border-d-line pt-4">
+              <Button variant="accent" pending={pending} onClick={() => go(() => act.sendPitch(eventId, s.id), () => setI(0))}>
+                Send to {s.company} →
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+/** Companies that confirmed for earlier events — one click invites them back as a lead (their email is on file). */
+function PastPartners({ eventId, alumni }: { eventId: string; alumni: Alum[] }) {
+  const [pending, go] = useAction();
+  if (!alumni.length) return null;
+  return (
+    <Card title="Partnered before" sub="Sponsors from your past events who aren't on this one yet" action={<Link href="/dashboard/sponsors" className="text-[12.5px] text-d-ink2 hover:text-d-ink">Sponsor directory →</Link>}>
+      <ul className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+        {alumni.map((a) => (
+          <li key={a.company} className="flex items-center gap-3 rounded-xl border border-d-line bg-black/20 p-3">
+            <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-white/[0.06] text-[12px] font-semibold">{a.company.split(" ").map((w) => w[0]).slice(0, 2).join("")}</span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-[13.5px] font-medium">{a.company}</span>
+              <span className="block truncate text-[11.5px] text-d-ink3">{a.times > 1 ? `${a.times} events · ` : ""}last: {a.tier} at {a.event}</span>
+            </span>
+            <button disabled={pending} onClick={() => go(() => act.addLeads(eventId, `${a.company}, ${a.email}`))} className="shrink-0 rounded-md border border-d-line px-2.5 py-1 text-[12px] transition-colors hover:border-s1/50 hover:bg-s1/10 disabled:opacity-40">+ Lead</button>
+          </li>
+        ))}
+      </ul>
+    </Card>
+  );
+}
+
+/** Real companies the agent recommended. Accepting one needs a contact email; then it's an ordinary lead. */
+function Suggestions({ event, demoInbox }: { event: EventRow; demoInbox: string | null }) {
+  const list = event.plan?.suggestions ?? [];
+  return (
+    <Card title="Recommended by the agent" sub={list.length ? `Real companies that fit this event. "Draft email" writes the pitch${demoInbox ? ` — addressed to your demo inbox ${demoInbox}` : ""}; you review it before anything is sent.` : undefined}>
+      {list.length ? (
+        <ul className="grid gap-2 md:grid-cols-2">
+          <AnimatePresence initial={false}>
+            {list.map((s, i) => <Suggestion key={s.company} eventId={event.id} s={s} i={i} demoInbox={demoInbox} />)}
+          </AnimatePresence>
+        </ul>
+      ) : (
+        <Empty>Run the Sponsorship agent — it recommends 8 companies that fit this event.</Empty>
+      )}
+    </Card>
+  );
+}
+
+function Suggestion({ eventId, s, i, demoInbox }: { eventId: string; s: NonNullable<NonNullable<EventRow["plan"]>["suggestions"]>[number]; i: number; demoInbox: string | null }) {
+  const [email, setEmail] = useState(demoInbox ?? "");
+  const [open, setOpen] = useState(false);
+  const [pending, go] = useAction();
+  return (
+    <motion.li layout initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, scale: 0.97 }} transition={{ duration: 0.35, ease, delay: i * 0.04 }} className="rounded-xl border border-d-line bg-black/20 p-3.5">
+      <div className="flex items-start gap-3">
+        <span className="grid size-10 shrink-0 place-items-center rounded-full border border-s4/40 text-[12px] font-semibold tabular-nums text-d-ink" style={{ background: `conic-gradient(var(--s4) ${s.fit_score * 3.6}deg, transparent 0)` }}>
+          <span className="grid size-8 place-items-center rounded-full bg-d-panel">{s.fit_score}</span>
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-baseline justify-between gap-2">
+            <span className="truncate text-[14px] font-medium">{s.company}</span>
+            <span className="shrink-0 text-[11px] text-d-ink3">{s.tier}</span>
+          </div>
+          <p className="mt-0.5 text-[12.5px] leading-snug text-d-ink2">{s.why}</p>
+        </div>
+      </div>
+      {open ? (
+        <form className="mt-3 flex gap-2" onSubmit={(e) => (e.preventDefault(), go(() => act.acceptSuggestion(eventId, s.company, email)))}>
+          <input autoFocus type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder={`partnerships@${s.company.split(" ")[0].toLowerCase()}.com`} aria-label={`Contact email for ${s.company}`}
+            className="h-9 min-w-0 flex-1 rounded-lg border border-d-line bg-black/30 px-3 text-[13px] text-d-ink outline-none placeholder:text-d-ink3 focus:border-white/25" />
+          <Button pending={pending} disabled={!email}>{pending ? "Drafting…" : "Draft email"}</Button>
+        </form>
+      ) : (
+        <div className="mt-3 flex justify-end gap-1.5">
+          <button disabled={pending} onClick={() => go(() => act.dismissSuggestion(eventId, s.company))} className="rounded-md px-2 py-1 text-[12px] text-d-ink3 transition-colors hover:text-d-ink">Dismiss</button>
+          <button onClick={() => setOpen(true)} className="rounded-md border border-s1/50 bg-s1/10 px-2.5 py-1 text-[12px] text-d-ink transition-colors hover:bg-s1/20">Draft email →</button>
+        </div>
+      )}
+    </motion.li>
+  );
+}
+
+function Pitch({ eventId, s, onClose, hideClose }: { eventId: string; s: Sponsor; onClose: () => void; hideClose?: boolean }) {
   const [editing, setEditing] = useState(false);
   const [subject, setSubject] = useState(s.pitch_subject ?? "");
   const [body, setBody] = useState(s.pitch_body ?? "");
@@ -564,11 +993,11 @@ function Pitch({ eventId, s, onClose }: { eventId: string; s: Sponsor; onClose: 
     <>
       <div className="flex items-baseline justify-between gap-4">
         <div className="min-w-0 truncate text-[12px] text-d-ink3">
-          To {s.company} · {s.contact_email}
+          {hideClose ? "Message" : `To ${s.company} · ${s.contact_email}`}
         </div>
         <div className="flex shrink-0 gap-4 text-[12.5px]">
           {draft && !editing && <button onClick={() => setEditing(true)} className="text-s1 hover:brightness-125">Edit</button>}
-          <button onClick={onClose} className="text-d-ink3 hover:text-d-ink">Close</button>
+          {!hideClose && <button onClick={onClose} className="text-d-ink3 hover:text-d-ink">Close</button>}
         </div>
       </div>
       {editing ? (
@@ -592,8 +1021,10 @@ function Pitch({ eventId, s, onClose }: { eventId: string; s: Sponsor; onClose: 
 
 // ───────────── 03 logistics ─────────────
 
-function Logistics({ event, volunteers, tasks }: Data) {
+function Logistics({ event, volunteers, tasks, crm }: Data) {
   const [pending, go] = useAction();
+  const [profile, setProfile] = useState<string | null>(null);
+  const shown = volunteers.find((v) => v.id === profile);
   const open = tasks.filter((t) => !t.volunteer_id);
   const hours = tasks.reduce((s, t) => s + hrs(t), 0);
   const rows = [
@@ -619,37 +1050,92 @@ function Logistics({ event, volunteers, tasks }: Data) {
       <Card
         title="Run of show"
         sub={event.date ? `${longDate(event.date)} — hover a shift for details` : undefined}
-        action={<Button variant="ghost" pending={pending} disabled={!tasks.length} onClick={() => go(() => act.emailVolunteers(event.id))}>Email volunteers their shifts</Button>}
+        action={<ConfirmButton variant="ghost" pending={pending} disabled={!tasks.length} confirm={`Email ${volunteers.length} volunteers?`} onConfirm={() => go(() => act.emailVolunteers(event.id))}>Email volunteers their shifts</ConfirmButton>}
       >
-        {tasks.length ? <div className="overflow-x-auto"><div className="min-w-[640px]"><ShiftTimeline rows={rows} /></div></div> : <Empty>Add volunteers, then run the Logistics agent.</Empty>}
+        {tasks.length ? <div className="overflow-x-auto"><div className="min-w-[640px]"><ShiftTimeline rows={rows} /></div></div> : <Empty>Add volunteers below (or use the demo list), then run the Logistics agent.</Empty>}
       </Card>
+
+      {crm && <MissionRoles event={event} crm={crm} />}
+
+      <Roles volunteers={volunteers} tasks={tasks} />
 
       <div className="grid gap-3 lg:grid-cols-[1fr_1fr]">
         <Card title="Hours per volunteer" sub="Load is balanced across the team">
           {load.length ? <BarList rows={load} format={(h) => `${h.toFixed(1)}h`} color="bg-s4" /> : <Empty>No volunteers yet.</Empty>}
         </Card>
-        <Card title="Volunteers" sub={`${volunteers.length} on the team`}>
+        <Card
+          title="Volunteers"
+          sub={`${volunteers.length} on the team — click one for their profile`}
+          action={<Button variant="ghost" pending={pending} onClick={() => go(() => act.staffEvent(event.id))}>+ From club roster</Button>}
+        >
+          {shown && <div className="mb-4"><VolunteerCard v={shown} tasks={tasks} onClose={() => setProfile(null)} /></div>}
           <ul className="mb-5 divide-y divide-d-line">
             {volunteers.map((v) => (
-              <li key={v.id} className="flex items-center justify-between gap-3 py-2.5 text-[13px]">
+              <li key={v.id}>
+                <button type="button" onClick={() => setProfile(profile === v.id ? null : v.id)} aria-expanded={profile === v.id} className={`flex w-full items-center justify-between gap-3 py-2.5 text-left text-[13px] transition-colors ${profile === v.id ? "text-d-ink" : "text-d-ink2 hover:text-d-ink"}`}>
                 <span className="flex items-center gap-2.5">
                   <span className="grid size-7 place-items-center rounded-full bg-white/[0.06] text-[11px] font-medium text-d-ink2">{v.name.split(" ").map((p) => p[0]).slice(0, 2).join("")}</span>
                   {v.name}
                 </span>
                 <span className="truncate text-[12px] text-d-ink3">{v.skills || "—"}</span>
+                </button>
               </li>
             ))}
           </ul>
-          <AddLines label="Name, email, skills — one per line" placeholder="Aditi, aditi@rit.edu, av, design" onAdd={(t) => act.addVolunteers(event.id, t)} />
+          <AddLines label="Name, email, skills — one per line" placeholder="Aditi, aditi@rit.edu, av, design" onAdd={(t) => act.addVolunteers(event.id, t)} demo={DEMO_VOLUNTEERS} />
         </Card>
       </div>
     </div>
   );
 }
 
+/** Who does what on the day: each volunteer's role (from the skills their shifts needed) and their shifts. */
+function Roles({ volunteers, tasks }: { volunteers: Volunteer[]; tasks: Task[] }) {
+  const t = (iso: string) => new Date(iso).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Kolkata" });
+  const rows = volunteers
+    .map((v) => {
+      const mine = tasks.filter((x) => x.volunteer_id === v.id).sort((a, b) => Date.parse(a.starts_at) - Date.parse(b.starts_at));
+      const used = mine.map((x) => x.skill).filter(Boolean) as string[];
+      const top = used.sort((a, b) => used.filter((x) => x === b).length - used.filter((x) => x === a).length)[0] ?? parseSkills(v.skills).skills[0];
+      return { v, mine, role: top ? roleOf(top) : "General help", hours: mine.reduce((s, x) => s + hrs(x), 0) };
+    })
+    .sort((a, b) => b.mine.length - a.mine.length);
+  if (!tasks.length) return null;
+  return (
+    <Card title="Who does what" sub="Every volunteer's role and shifts for the day">
+      <ul className="grid gap-2 md:grid-cols-2">
+        {rows.map(({ v, mine, role, hours }) => (
+          <li key={v.id} className="rounded-xl border border-d-line bg-black/20 p-3.5">
+            <div className="flex items-center gap-3">
+              <span className="grid size-9 shrink-0 place-items-center rounded-full bg-s1/15 text-[12px] font-semibold text-s1">{v.name.split(" ").map((p) => p[0]).slice(0, 2).join("")}</span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[14px] font-medium">{v.name}</span>
+                <span className="block text-[12px] text-s1">{role}</span>
+              </span>
+              <span className="text-right text-[12px] tabular-nums text-d-ink3">{mine.length} shift{mine.length === 1 ? "" : "s"}<br />{hours.toFixed(1)}h</span>
+            </div>
+            {mine.length ? (
+              <ul className="mt-2.5 space-y-1 border-t border-d-line pt-2.5">
+                {mine.map((x) => (
+                  <li key={x.id} className="flex gap-3 text-[12.5px]">
+                    <span className="w-24 shrink-0 tabular-nums text-d-ink3">{t(x.starts_at)}–{t(x.ends_at)}</span>
+                    <span className="truncate text-d-ink2">{x.title}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mt-2 text-[12px] text-d-ink3">On standby — no shift needed them.</p>
+            )}
+          </li>
+        ))}
+      </ul>
+    </Card>
+  );
+}
+
 // ───────────── 04 comms ─────────────
 
-function Comms({ event, attendees }: Data) {
+function Comms({ event, attendees, invitable, studentInbox }: Data) {
   const [pending, go] = useAction();
   const [toggling, startToggle] = useTransition();
   const notify = useToast();
@@ -690,13 +1176,15 @@ function Comms({ event, attendees }: Data) {
         </Card>
       </div>
 
+      <Invites event={event} invitable={invitable} studentInbox={studentInbox} ready={!!comms} />
+
       <Card
         title="Attendees & check-in"
         sub="Tick people in at the door. Certificates go to everyone checked in."
         action={
           <div className="flex gap-2">
-            <Button variant="ghost" pending={pending} disabled={!attendees.length || !comms} onClick={() => go(() => act.sendReminders(event.id))}>Send reminder</Button>
-            <Button variant="accent" pending={pending} disabled={!checked} onClick={() => go(() => act.sendCertificates(event.id))}>Email certificates</Button>
+            <ConfirmButton variant="ghost" pending={pending} disabled={!attendees.length || !comms} confirm={`Email ${attendees.length} attendees?`} onConfirm={() => go(() => act.sendReminders(event.id))}>Send reminder</ConfirmButton>
+            <ConfirmButton pending={pending} disabled={!checked} confirm="Email certificates to everyone checked in?" onConfirm={() => go(() => act.sendCertificates(event.id))}>Email certificates</ConfirmButton>
           </div>
         }
       >
@@ -739,10 +1227,66 @@ function Comms({ event, attendees }: Data) {
   );
 }
 
+/** The generated poster plus a confirm-gated "send poster + invite to students". */
+function Invites({ event, invitable, studentInbox, ready }: { event: EventRow; invitable: number; studentInbox: string | null; ready: boolean }) {
+  const [pending, go] = useAction();
+  const [confirm, setConfirm] = useState(false);
+  const [v] = useState(Date.now); // cache-buster so a re-plan shows the fresh poster
+  const src = `/api/poster/${event.id}?v=${v}`;
+  return (
+    <Card title="Poster & student invites" sub="Comms designs the poster from the plan. Invites go to students with a Relay account who haven't registered yet.">
+      {event.name ? (
+        <div className="grid gap-5 md:grid-cols-[minmax(0,320px)_1fr]">
+          <a href={src} target="_blank" className="group relative block overflow-hidden rounded-xl border border-d-line">
+            {/* eslint-disable-next-line @next/next/no-img-element -- generated PNG from our own route */}
+            <img src={src} alt={`${event.name} poster`} className="aspect-[4/5] w-full object-cover transition-transform duration-500 group-hover:scale-[1.02]" />
+          </a>
+          <div className="flex flex-col">
+            <div className="space-y-2 text-[13px]">
+              <div className="flex gap-3"><span className="w-20 shrink-0 text-d-ink3">Subject</span><span>You&apos;re invited: {event.name}</span></div>
+              <div className="flex gap-3"><span className="w-20 shrink-0 text-d-ink3">Recipients</span><span>{invitable} student{invitable === 1 ? "" : "s"} not registered yet</span></div>
+              {studentInbox && <div className="flex gap-3"><span className="w-20 shrink-0 text-d-ink3">Demo</span><span className="text-s3">Fictional students&apos; invites go to {studentInbox}</span></div>}
+              <div className="flex gap-3"><span className="w-20 shrink-0 text-d-ink3">Contains</span><span className="text-d-ink2">The poster, the announcement and a Register button</span></div>
+            </div>
+            <div className="mt-auto flex flex-wrap gap-2 pt-5">
+              <a href={src} download className="inline-flex h-9 items-center rounded-lg border border-d-line bg-white/[0.03] px-3.5 text-[13px] font-medium transition-colors hover:bg-white/[0.07]">Download poster</a>
+              {confirm ? (
+                <>
+                  <Button variant="ghost" onClick={() => setConfirm(false)}>Cancel</Button>
+                  <Button variant="accent" pending={pending} onClick={() => go(() => act.sendInvites(event.id), () => setConfirm(false))}>
+                    Yes, send {invitable} invite{invitable === 1 ? "" : "s"}
+                  </Button>
+                </>
+              ) : (
+                <Button variant="accent" disabled={!ready || !invitable} onClick={() => setConfirm(true)}>
+                  Send poster + invite to students →
+                </Button>
+              )}
+            </div>
+            {!ready && <p className="mt-2 text-[12px] text-d-ink3">Run the Comms agent first — it writes the invite text.</p>}
+          </div>
+        </div>
+      ) : (
+        <Empty>Run the Planner first — the poster is built from the plan.</Empty>
+      )}
+    </Card>
+  );
+}
+
 // ───────────── 05 reporting ─────────────
 
 function Reporting({ event, attendees, sponsors }: Data) {
+  return (
+    <div className="space-y-3">
+      <ReportingBody event={event} attendees={attendees} sponsors={sponsors} />
+      {!isFree(event) && <Metrics event={event} />}
+    </div>
+  );
+}
+
+function ReportingBody({ event, attendees, sponsors }: Pick<Data, "event" | "attendees" | "sponsors">) {
   const [pending, go] = useAction();
+  const free = isFree(event);
   const checked = attendees.filter((a) => a.checked_in).length;
   const confirmed = sponsors.filter((s) => s.status === "confirmed");
   const amt = (s: Sponsor) => event.plan?.tiers?.find((t) => t.name === s.tier)?.amount ?? 0;
@@ -754,26 +1298,39 @@ function Reporting({ event, attendees, sponsors }: Data) {
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Stat label="Attended" value={checked} hint={`of ${attendees.length} registered`} dot="bg-s3" />
         <Stat label="Attendance rate" value={`${rate}%`} hint={<Meter value={checked} max={attendees.length || 1} color="bg-s3" track="bg-s3/15" height="h-1.5" />} />
-        <Stat label="Partners" value={confirmed.length} dot="bg-s2" />
-        <Stat label="Sponsorship" value={inr(raised)} hint={event.budget ? `${Math.round((raised / event.budget) * 100)}% of the budget` : undefined} />
+        {free ? (
+          <>
+            <Stat label="Seats filled" value={event.expected_attendees ? `${Math.round((attendees.length / event.expected_attendees) * 100)}%` : "—"} hint={`${attendees.length} of ${event.expected_attendees ?? "?"} seats`} dot="bg-s2" />
+            <Stat label="Certificates" value={attendees.filter((a) => a.certificate_sent).length} hint="Sent to checked-in attendees" />
+          </>
+        ) : (
+          <>
+            <Stat label="Partners" value={confirmed.length} dot="bg-s2" />
+            <Stat label="Sponsorship" value={inr(raised)} hint={event.budget ? `${Math.round((raised / event.budget) * 100)}% of the budget` : undefined} />
+          </>
+        )}
       </div>
 
       <div className="grid gap-3 lg:grid-cols-[1.4fr_1fr]">
-        <Card title="Partner report" sub="Written by the Reporting agent from real numbers">
+        <Card title={free ? "Event report" : "Partner report"} sub="Written by the Reporting agent from real numbers">
           {event.summary ? <p className="text-[14.5px] leading-[1.75] whitespace-pre-wrap text-d-ink">{event.summary}</p> : <Empty>Run the Reporting agent after the event.</Empty>}
         </Card>
         <div className="space-y-3">
-          <Card title="Partner contributions" sub="Confirmed sponsors by tier amount">
-            {confirmed.length ? <BarList rows={confirmed.map((s) => ({ label: s.company, value: amt(s), note: s.tier ?? undefined }))} format={inr} color="bg-s2" /> : <Empty>No confirmed partners yet.</Empty>}
-          </Card>
+          {!free && (
+            <Card title="Partner contributions" sub="Confirmed sponsors by tier amount">
+              {confirmed.length ? <BarList rows={confirmed.map((s) => ({ label: s.company, value: amt(s), note: s.tier ?? undefined }))} format={inr} color="bg-s2" /> : <Empty>No confirmed partners yet.</Empty>}
+            </Card>
+          )}
           <Card title="Deliver">
             <div className="flex flex-col gap-2">
               <a href={`/api/report/${event.id}`} target="_blank" className="inline-flex h-9 items-center justify-center rounded-lg border border-d-line bg-white/[0.03] text-[13px] font-medium transition-colors hover:bg-white/[0.07]">
                 Open report PDF
               </a>
-              <Button variant="accent" pending={pending} disabled={!event.summary || !confirmed.length} onClick={() => go(() => act.sendReport(event.id))}>
-                Email report to {confirmed.length} partner{confirmed.length === 1 ? "" : "s"}
-              </Button>
+              {!free && (
+                <ConfirmButton pending={pending} disabled={!event.summary || !confirmed.length} confirm={`Email the report to ${confirmed.length} partners?`} onConfirm={() => go(() => act.sendReport(event.id))}>
+                  Email report to {confirmed.length} partner{confirmed.length === 1 ? "" : "s"}
+                </ConfirmButton>
+              )}
             </div>
           </Card>
         </div>

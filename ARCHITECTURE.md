@@ -36,6 +36,17 @@ EventDesk (client) calls runAgent(event, name) for each agent IN ORDER, UI updat
 ```
 
 Every run is logged to `agent_runs` → activity feed + pipeline card status. Planner failure stops the chain.
+The composer picks which agents run (`?run=planner,comms`); any agent can also run alone from its page.
+**Free events:** the Planner sets `plan.kind = "free"` (seminars, talks, no budget) → budget 0, no tiers, Sponsorship skipped, report addressed to the club.
+**Sponsor research (`/dashboard/research`):** `src/lib/fit.ts` scores each company 0–100 from 7 weighted factors (theme, local, sourced student-event history, contribution value, timeline, evidence freshness × confidence, our own relationship incl. late/disputed payments from `sponsor_payments`); unknowns score 0 with a reason, never guessed. Weights live in `settings.fit_weights`. Sources require an http(s) URL and a confidence. `leadFromCompany` only stages a lead — pitches still go through Review & send. All research actions write `audit_log`.
+**Deals (migration 002):** each contacted/replied/confirmed sponsor gets a deal panel on the event's Sponsorship page — terms (value, contribution type, obligations, exclusivity, data sharing, branding, payment terms, reporting, deadline; these fill the research compare view), payment milestones (a past-due unpaid milestone shows as overdue automatically), a fulfilment checklist ("Fill from tier perks", evidence links), and two PDFs from `src/lib/sponsor-pdf.ts`: `/api/proposal/[sponsorId]` and `/api/roi/[sponsorId]` (organiser-only via proxy). Event numbers for partner reports (social reach, challenge participants, photo links) live in `events.plan.metrics`.
+**Poster & invites:** `src/lib/poster.tsx` renders a 1080×1350 PNG poster with `next/og` (Archivo Black, OFL, in `src/lib/fonts`; fox from `public/fox/poster-fox.png`); served publicly at `/api/poster/[id]` and shown on `/e/[id]`. Comms page: preview, download, and a confirm-gated "Send poster + invite to students" (`sendInvites`): student accounts not yet registered get an HTML email with the poster inline. `DEMO_STUDENT_INBOX` receives invites meant for fictional `@example.com` students (one copy per send). `APP_URL` sets the link base.
+**Sponsor emails:** Sponsorship drafts a full funding request per lead (event + audience, exact tier ask, publicity plan as bullets, reply-by date). The Sponsorship page's "Review & send" card previews each email, lets the organiser edit it, and sends one (`sendPitch`) or all (`sendPitches`) — never automatically. With `DEMO_INBOX` set, pitches to fictional `@example.com` sponsors are delivered there, labelled "[Demo → Company]".
+**Volunteer roster:** club members are `volunteers` rows with `event_id = null`; `skills` holds their roles, the token `away` marks them unavailable (`src/lib/roster.ts`). History (events, hours) comes from per-event volunteer rows with the same email.
+**Offline backup:** every agent goes through `smart()` in `actions.ts` — if Gemini can't answer (quota, overload, timeout, bad JSON) the agent builds its result from `src/lib/offline.ts` (brief parser, plan templates, a pool of 16 real sponsor companies, run-of-show, announcement, report) and the run summary ends in "· offline mode". `RELAY_OFFLINE=1` in `.env.local` skips Gemini entirely for a guaranteed demo. Composer and desk have "demo" buttons that fill fictional sponsors/volunteers (`src/lib/demo.ts`).
+**Edit details:** organiser edits (brief, name, date, venue, budget, seats, funded/free) are pinned in `plan.fixed`; a Planner re-run plans around them. The edit dialog can re-run any chosen agents.
+**Voice:** the composer's mic uses the browser Web Speech API (en-IN) — hidden where unsupported.
+**Recommended sponsors:** Sponsorship asks Gemini for 8 real companies → `plan.suggestions` (no emails); the organiser adds a contact to turn one into a lead.
 Agents with no input (no leads / no volunteers) skip with a message instead of failing.
 
 ## Files
@@ -43,13 +54,18 @@ Agents with no input (no leads / no volunteers) skip with a message instead of f
 | Path | What |
 |---|---|
 | `src/app/page.tsx`, `src/app/landing.css`, `src/components/landing/RelayLanding.tsx` | Landing: giant wordmark, scroll-scrubbed fox behind hero + pinned story, cast carousel (6 characters = 5 agents + you), menu, RELAYBAR/Space stepper, Lenis smooth scroll. Stills on phones / reduced motion |
-| `src/lib/fox.ts`, `src/components/FoxCanvas.tsx`, `src/components/FoxBackdrop.tsx` | Fox engine: mp4box (CDN) + WebCodecs decode every frame once → JPEG blobs → LRU ImageBitmaps → canvas with sub-frame blend; `<video>` capture fallback. Orange duotone = canvas grayscale + `mix-blend-mode: multiply` over a hot gradient. Also in the desk sidebar (each section owns a slice of the orbit) and the login side panels |
+| `src/lib/fox.ts`, `src/components/FoxCanvas.tsx`, `src/components/FoxBackdrop.tsx` | Fox engine: 241 pre-cut transparent WebP frames (`public/fox/NNN.webp`, matted offline from the Kling clip) fetched once → blobs → LRU ImageBitmaps → canvas with sub-frame blend. The fox is drawn in true colour over a hot gradient. Also in the desk sidebar (each section owns a slice of the orbit) and the login side panels |
 | `src/app/actions.ts` | **All** Server Actions: 5 agents, `runAgent`, organiser actions (send pitches, set status, email shifts, reminders, certificates, report), public `register` |
 | `src/lib/server.ts` | `db()`, `llm()`, `sendMail()`, `requireAdmin()` |
 | `src/lib/schedule.ts` (+ `.test.ts`) | Deterministic volunteer assignment, no overlaps |
-| `src/lib/pdf.ts`, `src/lib/report.ts` | Certificate + report PDFs |
+| `src/lib/pdf.ts`, `src/lib/report.ts` | Certificate + multi-page report PDF (cover with mascot, KPIs, summary, registrations chart, budget, sponsor funnel + partners, tiers, timeline, run-of-show) |
+| `src/app/dashboard/sponsors/page.tsx`, `src/lib/partners.ts` | Sponsor directory; fictional company profiles (contact, notes) |
+| `src/components/FoxMark.tsx`, `src/app/icon.png` | Fox mascot app icon (favicon + every Relay wordmark) |
 | `src/lib/agents.ts`, `src/lib/types.ts` | Agent list, row types |
-| `src/app/dashboard/page.tsx` | New event + events list |
+| `src/app/dashboard/page.tsx` | Organiser home: composer + agent picker, lifetime KPIs, "Needs you" inbox, health rings, upcoming cards, reach trend, activity heatmap |
+| `src/app/dashboard/past/page.tsx`, `src/app/dashboard/agents/[agent]/page.tsx` | Past events archive; per-agent pages (about, run alone via `RunPanel`, history) |
+| `src/lib/desk.ts` | `allEvents()` — every event with children, split upcoming/past |
+| `src/components/desk/{fx,EventCard,RunPanel,nav}.tsx` | Animated charts (count-up, sparkline, area trend, rings, heatmap, paired bars), event card, single-agent runner, home sidebar |
 | `src/app/dashboard/[id]/page.tsx`, `src/components/desk/EventDesk.tsx` | Event desk (dark): sidebar with Overview + one page per agent (Planner, Sponsorship, Logistics, Comms, Reporting), each with stat tiles + charts |
 | `src/components/desk/{shell,charts,ui,icons}.tsx` | App shell (sidebar / mobile pills), SVG charts (segmented bar, bar list, line, shift timeline, milestones, meter — all with hover tooltips), dark UI kit |
 | `src/app/e/[id]/page.tsx`, `src/components/RegisterForm.tsx` | Public registration |
@@ -61,7 +77,10 @@ Agents with no input (no leads / no volunteers) skip with a message instead of f
 
 ## Data model
 
-`events`, `sponsors` (status: lead → drafted → contacted → replied → confirmed | declined), `volunteers`, `tasks`, `attendees` (unique per event+email), `agent_runs`, `students` (portal accounts; linked to `attendees` by email). See `supabase/schema.sql`.
+Migration `supabase/migrations/002_sponsor_crm_volunteers.sql` (run once by the project owner; `crmReady()` in `server.ts` detects it): `companies` + `company_sources` (claim, URL, date, confidence), `settings` (fit-score weights), sponsor columns `company_id, contribution_type, value, terms, proposal_sent_at`, `sponsor_payments` (planned → invoice_sent → committed → partially_received/received | overdue | disputed), `sponsor_deliverables`, `volunteer_profiles` (opt-in skills, roles, availability slots, goals, rewards, languages, accessibility), `roles` (9 mission roles, seeded), `role_requests` (suggested → requested → accepted/declined → completed, with reason + override flag), `volunteer_feedback`, `rewards`, `incidents`, `audit_log`. All RLS-on, server-only. Types in `src/lib/types.ts`.
+
+
+`events` (`plan` jsonb also holds `kind` and `suggestions`), `sponsors` (status: lead → drafted → contacted → replied → confirmed | declined), `volunteers`, `tasks`, `attendees` (unique per event+email), `agent_runs`, `students` (portal accounts; linked to `attendees` by email). See `supabase/schema.sql`.
 
 ## UI direction
 

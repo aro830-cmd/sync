@@ -39,4 +39,10 @@ const timeout = () => Object.assign(new Error("aborted"), { name: "TimeoutError"
 assert.equal(geminiError(timeout()).status, 504);
 assert.equal(await withFallback(["slow", "fast"], async (m) => (m === "slow" ? Promise.reject(timeout()) : "fast ok"), [0]), "fast ok");
 
+// A quota error isn't retried on the same option, but the next model/key gets a go.
+tried.length = 0;
+assert.equal(await withFallback(["k1:a", "k2:a"], async (m) => (tried.push(m), m === "k1:a" ? Promise.reject(apiErr(429, "You exceeded your current quota. x")) : "from k2"), [0]), "from k2");
+assert.deepEqual(tried, ["k1:a", "k2:a"]);
+assert.equal(geminiError(apiErr(429, "You exceeded your current quota. x")).quota, true);
+
 console.log("retry ok");

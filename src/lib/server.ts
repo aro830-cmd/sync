@@ -2,9 +2,33 @@ import "server-only";
 import { createClient } from "@supabase/supabase-js";
 import { GoogleGenAI } from "@google/genai";
 import nodemailer from "nodemailer";
-import { withFallback } from "@/lib/retry";
+import { geminiError, withFallback } from "@/lib/retry";
 import { cookies } from "next/headers";
 import { ADMIN_COOKIE, readToken } from "@/lib/token";
+import { createHash } from "node:crypto";
+import { THRESHOLD, cosine, embed, facts } from "@/lib/vcache";
+
+/**
+ * Vector memory: a past answer to a near-identical prompt (cosine ≥ THRESHOLD on a local embedding) with exactly the
+ * same facts (numbers, dates, names) is reused instead of calling Gemini. Cache errors never block a real call.
+ */
+async function recall(key: string, vec: number[]) {
+  try {
+    const { data } = await db().from("llm_cache").select("id, vec, response, hits").eq("facts", key).order("created_at", { ascending: false }).limit(50);
+    const best = (data ?? []).map((r) => ({ r, sim: cosine(vec, r.vec) })).sort((a, b) => b.sim - a.sim)[0];
+    if (!best || best.sim < THRESHOLD) return null;
+    await db().from("llm_cache").update({ hits: best.r.hits + 1, last_hit_at: new Date().toISOString() }).eq("id", best.r.id);
+    return JSON.parse(best.r.response) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+/** How many Gemini calls the vector memory has saved so far. */
+export async function callsSaved() {
+  const { data } = await db().from("llm_cache").select("hits");
+  return (data ?? []).reduce((s, r) => s + (r.hits ?? 0), 0);
+}
 
 function env(name: string) {
   const v = process.env[name];
@@ -18,23 +42,55 @@ export function db() {
   });
 }
 
-// Used only when the configured model stays overloaded (503) after retries.
-const FALLBACK_MODELS = ["gemini-3.6-flash", "gemini-3.5-flash"];
+// Used when the configured model stays overloaded (503) or out of quota (429). Free-tier quota is per model,
+// so every extra model is extra headroom; the lite and Gemma models have the most generous limits.
+const FALLBACK_MODELS = ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemma-4-26b-a4b-it", "gemma-4-31b-it"];
+
+// model|key → time its quota error expires. Skipping known-exhausted options saves a round trip each call.
+// ponytail: per-process memory, resets on restart; fine for one server.
+const cooling = new Map<string, number>();
 
 /** Ask Gemini for JSON. The agent code, not the model, performs side effects. */
 export async function llm<T>(prompt: string): Promise<T> {
-  const ai = new GoogleGenAI({ apiKey: env("GEMINI_API_KEY") });
+  const key = createHash("sha256").update(facts(prompt)).digest("hex");
+  const vec = embed(prompt);
+  const remembered = await recall(key, vec);
+  if (remembered) return remembered as T;
   const primary = process.env.GEMINI_MODEL || "gemini-3.8-flash";
-  const res = await withFallback([primary, ...FALLBACK_MODELS.filter((m) => m !== primary)], (model) =>
-    ai.models.generateContent({
-      model,
-      contents: prompt,
-      // A hung call would freeze the whole pipeline; 35s is well above a normal agent reply.
-      config: { responseMimeType: "application/json", temperature: 0.4, abortSignal: AbortSignal.timeout(35_000) },
-    }),
-  );
+  const models = [primary, ...FALLBACK_MODELS.filter((m) => m !== primary)];
+  // GEMINI_API_KEY_FALLBACK (optional, comma-separated) adds more quota. Order: best model on every key, then the next model.
+  const keys = [env("GEMINI_API_KEY"), ...(process.env.GEMINI_API_KEY_FALLBACK ?? "").split(",")].map((k) => k.trim()).filter(Boolean);
+  const all = models.flatMap((model) => keys.map((apiKey) => ({ model, apiKey })));
+  const attempt = () => {
+    const now = Date.now();
+    const fresh = all.filter((c) => (cooling.get(c.model + c.apiKey) ?? 0) < now);
+    return withFallback(fresh.length ? fresh : all, ({ model, apiKey }) =>
+      new GoogleGenAI({ apiKey }).models
+        .generateContent({
+          model,
+          contents: prompt,
+          // A hung call would freeze the whole pipeline; 35s is well above a normal agent reply.
+          config: { responseMimeType: "application/json", temperature: 0.4, abortSignal: AbortSignal.timeout(35_000) },
+        })
+        .catch((e) => {
+          if (geminiError(e).quota) cooling.set(model + apiKey, Date.now() + 60_000);
+          throw e;
+        }),
+    );
+  };
+  let res;
   try {
-    return JSON.parse(res.text ?? "") as T;
+    res = await attempt();
+  } catch (e) {
+    const err = geminiError(e);
+    if (err.quota) throw new Error(`Gemini is out of quota on ${keys.length === 1 ? "the API key" : `all ${keys.length} API keys`} right now.`);
+    throw err;
+  }
+  try {
+    // Some fallback models wrap JSON in a markdown fence; strip it.
+    const out = JSON.parse((res.text ?? "").replace(/^\s*```(?:json)?\s*|\s*```\s*$/g, "")) as T;
+    await db().from("llm_cache").insert({ facts: key, vec, response: JSON.stringify(out) }).then(() => {}, () => {});
+    return out;
   } catch {
     throw new Error("Gemini returned malformed JSON. Run the agent again.");
   }
@@ -44,7 +100,9 @@ export async function sendMail(opts: {
   to: string;
   subject: string;
   text: string;
-  attachments?: { filename: string; content: Buffer }[];
+  html?: string;
+  /** `cid` lets the HTML body show an attachment inline (<img src="cid:...">). */
+  attachments?: { filename: string; content: Buffer; cid?: string }[];
 }) {
   const user = env("GMAIL_USER");
   const transport = nodemailer.createTransport({
@@ -62,4 +120,13 @@ export async function requireAdmin() {
     return;
   }
   if (readToken((await cookies()).get(ADMIN_COOKIE)?.value) !== "admin") throw new Error("Your organiser session ended. Log in again.");
+}
+
+/**
+ * True once supabase/migrations/002_sponsor_crm_volunteers.sql has been run on this database.
+ * Features built on it check this and show a "database update needed" notice instead of erroring.
+ */
+export async function crmReady() {
+  const { error } = await db().from("roles").select("key").limit(1);
+  return !error;
 }

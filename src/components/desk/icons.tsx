@@ -11,5 +11,11 @@ export const Icon = {
   reporting: <svg viewBox="0 0 24 24" className="size-[18px]" {...P}><path d="M4 20h16" /><rect x="5.5" y="11" width="3" height="6" rx="1" /><rect x="10.5" y="7" width="3" height="10" rx="1" /><rect x="15.5" y="4" width="3" height="13" rx="1" /></svg>,
   events: <svg viewBox="0 0 24 24" className="size-[18px]" {...P}><path d="M4 6.5h16M4 12h16M4 17.5h10" /></svg>,
   back: <svg viewBox="0 0 24 24" className="size-4" {...P}><path d="M14.5 6 8.5 12l6 6" /></svg>,
+  past: <svg viewBox="0 0 24 24" className="size-[18px]" {...P}><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3M4.5 4.5v3h3" /><path d="M12 8v4.2l2.8 1.8" /></svg>,
+  partners: <svg viewBox="0 0 24 24" className="size-[18px]" {...P}><circle cx="9" cy="8.5" r="3" /><circle cx="16.5" cy="9.5" r="2.4" /><path d="M3.5 19c.8-3 3-4.6 5.5-4.6S13.7 16 14.5 19M14 14.8c.8-.3 1.6-.5 2.5-.5 2 0 3.6 1.4 4 4.2" /></svg>,
+  spark: <svg viewBox="0 0 24 24" className="size-[18px]" {...P}><path d="M12 3.5v4M12 16.5v4M3.5 12h4M16.5 12h4M6 6l2.6 2.6M15.4 15.4 18 18M6 18l2.6-2.6M15.4 8.6 18 6" /></svg>,
+  audit: <svg viewBox="0 0 24 24" className="size-[18px]" {...P}><path d="M7 3.5h7.5L19 8v12.5H7z" /><path d="M14.5 3.5V8H19M10 12h6M10 15.5h6M10 19h3" /></svg>,
+  why: <svg viewBox="0 0 24 24" className="size-[18px]" {...P}><circle cx="12" cy="12" r="8.5" /><path d="M9.8 9.5a2.3 2.3 0 1 1 3.2 2.1c-.6.3-1 .8-1 1.5v.4M12 16.6v.1" /></svg>,
+  reroute: <svg viewBox="0 0 24 24" className="size-[18px]" {...P}><path d="M13 3.5 5.5 13.5H12l-1 7 7.5-10H12z" /></svg>,
   student: <svg viewBox="0 0 24 24" className="size-[18px]" {...P}><circle cx="12" cy="8.5" r="3.5" /><path d="M5 19.5c1.2-3.3 3.8-5 7-5s5.8 1.7 7 5" /></svg>,
 };

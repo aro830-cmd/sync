@@ -2,6 +2,8 @@
 
 export class GeminiError extends Error {
   status: number;
+  /** Out of quota (often per model and per minute): retrying the same call won't help, trying another model or key might. */
+  quota = false;
   constructor(message: string, status: number) {
     super(message);
     this.status = status;
@@ -17,7 +19,9 @@ export function geminiError(e: unknown) {
   const raw = e instanceof Error ? e.message : String(e);
   try {
     const { error } = JSON.parse(raw);
-    return new GeminiError(`Gemini: ${String(error.message).split(". ")[0]}.`, Number(error.code) || 0);
+    const err = new GeminiError(`Gemini: ${String(error.message).split(". ")[0]}.`, Number(error.code) || 0);
+    err.quota = err.status === 429 && /quota/i.test(String(error.message));
+    return err;
   } catch {
     return new GeminiError(raw, 0);
   }
@@ -32,14 +36,14 @@ export async function withRetry<T>(fn: () => Promise<T>, waits = [2000]): Promis
       return await fn();
     } catch (e) {
       const err = geminiError(e);
-      if (!RETRYABLE.has(err.status) || i >= waits.length) throw err;
+      if (!RETRYABLE.has(err.status) || err.quota || i >= waits.length) throw err;
       await new Promise((r) => setTimeout(r, waits[i]));
     }
   }
 }
 
-/** Try each model in turn; move on only when one stays overloaded. Other errors (bad key, bad request) surface at once. */
-export async function withFallback<T>(models: string[], call: (model: string) => Promise<T>, waits?: number[]): Promise<T> {
+/** Try each option (model, or model × key) in turn; move on when one is overloaded or out of quota. Other errors (bad key, bad request) surface at once. */
+export async function withFallback<T, M = string>(models: M[], call: (model: M) => Promise<T>, waits?: number[]): Promise<T> {
   for (let i = 0; ; i++) {
     try {
       return await withRetry(() => call(models[i]), waits);
@@ -49,3 +53,4 @@ export async function withFallback<T>(models: string[], call: (model: string) =>
     }
   }
 }
+

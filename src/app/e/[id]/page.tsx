@@ -1,3 +1,4 @@
+import { FoxMark } from "@/components/FoxMark";
 import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import { db } from "@/lib/server";
@@ -18,6 +19,8 @@ async function Registration({ params }: { params: Promise<{ id: string }> }) {
   return (
     <div className="grid gap-16 md:grid-cols-[1.2fr_1fr] md:items-end">
       <div>
+        {/* eslint-disable-next-line @next/next/no-img-element -- generated PNG from our own route */}
+        <img src={`/api/poster/${ev.id}`} alt={`${ev.name} poster`} className="mb-10 w-full max-w-sm rounded-2xl border border-line" />
         <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-ink-2">{ev.theme}</p>
         <h1 className="mt-4 font-[family-name:var(--font-archivo)] font-black uppercase [font-stretch:125%] text-[clamp(2.6rem,7vw,5.8rem)] leading-[0.9] tracking-[-0.03em]">{ev.name}</h1>
         <div className="mt-8 space-y-1 border-l border-signal pl-4 text-[15px] text-ink-2">
@@ -43,7 +46,7 @@ export default function Page({ params }: PageProps<"/e/[id]">) {
   return (
     <main className="grain min-h-screen px-6 py-16 md:py-28">
       <div className="mx-auto max-w-5xl">
-        <Link href="/" className="font-[family-name:var(--font-archivo)] text-2xl font-semibold tracking-[-0.02em]">Relay<sup className="text-[.45em] text-signal">®</sup></Link>
+        <Link href="/" className="inline-flex items-center gap-2.5 font-[family-name:var(--font-archivo)] text-2xl font-semibold tracking-[-0.02em]"><FoxMark className="size-9 rounded-[11px]" />Relay<sup className="text-[.45em] text-signal">®</sup></Link>
         <div className="mt-16 md:mt-24">
           <Suspense fallback={<div className="h-80 animate-pulse rounded-2xl bg-paper-2/50" />}>
             <Registration params={params} />
