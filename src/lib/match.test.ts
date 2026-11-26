@@ -38,4 +38,11 @@ assert.match(s[0].reason, /their turn/);
 // Deterministic: same input, same output.
 assert.deepEqual(suggest(roles, twins, {}, date), suggest(roles, twins, {}, date));
 
+// Structured "why" for the Why? panel: the chosen person's rules pass where they should, and every profile is listed
+// with the real reason (excluded people included, never silently dropped).
+s = suggest([roles[0]], [p("ana", { preferred_roles: ["check_in_lead"], skills: ["registration"] }), busy, p("out", { opted_in: false })], {}, date);
+assert.equal(s[0].why.rules.find((r) => r.rule === "Chose this role")?.ok, true);
+assert.equal(s[0].why.rules.find((r) => r.rule === "No sensitive attributes")?.ok, true);
+assert.deepEqual(Object.fromEntries(s[0].why.considered.map((c) => [c.id, c.verdict])), { ana: "chosen", busy: "excluded", out: "excluded" });
+
 console.log("match ok");

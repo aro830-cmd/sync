@@ -1,6 +1,6 @@
 import { Suspense } from "react";
 import { notFound } from "next/navigation";
-import { crmReady, db } from "@/lib/server";
+import { callsSaved, crmReady, db } from "@/lib/server";
 import { EventDesk } from "@/components/desk/EventDesk";
 import { SetupNotice } from "@/components/desk/SetupNotice";
 
@@ -30,7 +30,7 @@ async function crm(eventId: string, sponsorIds: string[]) {
     d.from("role_requests").select("*").eq("event_id", eventId).order("created_at"),
     d.from("volunteer_profiles").select("id, name, email, skills, preferred_roles, opted_in, available"),
     d.from("incidents").select("*").eq("event_id", eventId).order("created_at", { ascending: false }),
-    d.from("audit_log").select("*").eq("event_id", eventId).order("created_at", { ascending: false }).limit(25),
+    d.from("audit_log").select("*").eq("event_id", eventId).order("created_at", { ascending: false }).limit(200),
   ]);
   return {
     payments: p.data ?? [],
@@ -51,7 +51,7 @@ async function Desk({ params }: { params: Promise<{ id: string }> }) {
   try {
     const d = db();
     const q = (t: string) => d.from(t).select("*").eq("event_id", id);
-    const [ev, sponsors, volunteers, tasks, attendees, runs, past, students] = await Promise.all([
+const [ev, sponsors, volunteers, tasks, attendees, runs, past, students, events, decisions, decisionLog] = await Promise.all([
       d.from("events").select("*").eq("id", id).maybeSingle(),
       q("sponsors").order("created_at"),
       q("volunteers"),
@@ -61,8 +61,13 @@ async function Desk({ params }: { params: Promise<{ id: string }> }) {
       // Companies that said yes to other events — candidates to invite back.
       d.from("sponsors").select("company, contact_email, tier, events(name, date)").eq("status", "confirmed").neq("event_id", id),
       d.from("students").select("email"),
+      // For the Re-Router's event picker.
+      d.from("events").select("id, name, date").order("date", { ascending: false }),
+      // Decision explainability & appeal trail.
+      q("decisions").order("created_at", { ascending: false }).limit(300),
+      q("decision_log").order("created_at").limit(1000),
     ]);
-    const err = [ev, sponsors, volunteers, tasks, attendees, runs, past, students].find((r) => r.error)?.error;
+    const err = [ev, sponsors, volunteers, tasks, attendees, runs, past, students, events, decisions, decisionLog].find((r) => r.error)?.error;
     if (err) throw new Error(err.message);
     data = ev.data && {
       event: ev.data,
@@ -78,6 +83,10 @@ async function Desk({ params }: { params: Promise<{ id: string }> }) {
       studentInbox: process.env.DEMO_STUDENT_INBOX?.trim() || null,
       crm: await crm(id, sponsors.data!.map((s) => s.id)),
       today: new Date().toISOString().slice(0, 10),
+      events: events.data!,
+      decisions: decisions.data!,
+      decisionLog: decisionLog.data!,
+      saved: await callsSaved(),
     };
   } catch (e) {
     return <SetupNotice message={e instanceof Error ? e.message : String(e)} />;

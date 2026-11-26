@@ -10,16 +10,19 @@ import { DEMO_LEADS, DEMO_VOLUNTEERS } from "@/lib/demo";
 import { parseSkills, roleOf } from "@/lib/roster";
 import { Deals, Metrics, effectiveStatus, type Crm } from "./Deals";
 import { AuditTrail, ConfirmButton, Incidents, MissionRoles } from "./Ops";
-import { isFree, type Attendee, type EventRow, type Run, type Sponsor, type Task, type Volunteer } from "@/lib/types";
+import { isFree, type Decision, type DecisionLog, type Attendee, type EventRow, type Run, type Sponsor, type Task, type Volunteer } from "@/lib/types";
 import { BarList, LineChart, Meter, MilestoneTrack, SegmentedBar, ShiftTimeline, inr } from "./charts";
 import { Icon } from "./icons";
+import { Reroute } from "./Reroute";
+import { VolunteerCard } from "./VolunteerCard";
+import { AuditLogPage, DecisionsPage, Why, WhyProvider } from "./Why";
 import { Shell } from "./shell";
 import { Button, Card, Empty, Label, Stat, ToastProvider, ease, useToast } from "./ui";
 
 type Alum = { company: string; email: string; tier: string | null; event: string; times: number };
-type Data = { event: EventRow; sponsors: Sponsor[]; volunteers: Volunteer[]; tasks: Task[]; attendees: Attendee[]; runs: Run[]; alumni: Alum[]; demoInbox: string | null; invitable: number; studentInbox: string | null; crm: Crm; today: string };
+type Data = { event: EventRow; sponsors: Sponsor[]; volunteers: Volunteer[]; tasks: Task[]; attendees: Attendee[]; runs: Run[]; alumni: Alum[]; demoInbox: string | null; invitable: number; studentInbox: string | null; crm: Crm; today: string; events: { id: string; name: string | null; date: string | null }[]; decisions: Decision[]; decisionLog: DecisionLog[]; saved: number };
 type Live = Partial<Record<AgentName, "running" | "done" | "failed">>;
-type Section = "overview" | AgentName;
+type Section = "overview" | AgentName | "reroute" | "decisions" | "audit";
 type AgentState = "idle" | "running" | "done" | "failed";
 
 const ago = (iso: string) => {
@@ -33,7 +36,9 @@ const DOT: Record<AgentState, string> = { idle: "bg-white/15", running: "bg-s2 a
 export function EventDesk(props: Data) {
   return (
     <ToastProvider>
-      <Desk {...props} />
+      <WhyProvider decisions={props.decisions} log={props.decisionLog} volunteers={props.volunteers} profiles={props.crm?.profiles ?? []}>
+        <Desk {...props} />
+      </WhyProvider>
     </ToastProvider>
   );
 }
@@ -46,7 +51,7 @@ function Desk(d: Data) {
   // ?s=<agent> deep-links straight to an agent page (from the home inbox and the agent pages).
   const [section, setSection] = useState<Section>(() => {
     const s = params.get("s");
-    return agents.some((a) => a.id === s) ? (s as AgentName) : "overview";
+    return s === "reroute" || s === "decisions" || s === "audit" || agents.some((a) => a.id === s) ? (s as Section) : "overview";
   });
   const [live, setLive] = useState<Live>({});
   const [running, setRunning] = useState(false);
@@ -95,7 +100,7 @@ function Desk(d: Data) {
   );
 
   // Fox: each section owns a slice of the orbit; scrolling walks through that slice.
-  const order: Section[] = ["overview", ...agents.map((a) => a.id)];
+  const order: Section[] = ["overview", ...agents.map((a) => a.id), "reroute", "decisions", "audit"];
   const fox = () => {
     const max = document.documentElement.scrollHeight - innerHeight;
     return (order.indexOf(section) + (max > 0 ? scrollY / max : 0)) / order.length;
@@ -107,7 +112,21 @@ function Desk(d: Data) {
       head={head}
       groups={[
         { items: [{ key: "back", label: "All events", icon: Icon.events, href: "/dashboard" }, { key: "past", label: "Past events", icon: Icon.past, href: "/dashboard/past" }] },
-        { items: [{ key: "overview", label: "Overview", icon: Icon.overview, active: section === "overview", onClick: () => go("overview") }] },
+        {
+          items: [
+            { key: "overview", label: "Overview", icon: Icon.overview, active: section === "overview", onClick: () => go("overview") },
+            { key: "reroute", label: "Chaos Re-Router", icon: Icon.reroute, active: section === "reroute", onClick: () => go("reroute"), dot: "bg-crit" },
+            {
+              key: "decisions",
+              label: "Why & appeals",
+              icon: Icon.why,
+              active: section === "decisions",
+              onClick: () => go("decisions"),
+              hint: d.decisions.some((x) => x.status === "appealed") ? `${d.decisions.filter((x) => x.status === "appealed").length} open` : undefined,
+            },
+            { key: "audit", label: "Audit log", icon: Icon.audit, active: section === "audit", onClick: () => go("audit"), hint: d.decisionLog.length + (d.crm?.audit.length ?? 0) ? String(d.decisionLog.length + (d.crm?.audit.length ?? 0)) : undefined },
+          ],
+        },
         {
           label: "Agents",
           items: agents.map((a) => ({ key: a.id, label: a.name, icon: Icon[a.id], active: section === a.id, onClick: () => go(a.id), dot: DOT[state(a.id)] })),
@@ -118,6 +137,12 @@ function Desk(d: Data) {
         <motion.div key={section} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: 0.28, ease }}>
           {section === "overview" ? (
             <Overview d={d} state={state} running={running} onRun={run} onGo={go} />
+          ) : section === "decisions" ? (
+            <DecisionsPage />
+          ) : section === "audit" ? (
+            <AuditLogPage actions={d.crm?.audit ?? []} />
+          ) : section === "reroute" ? (
+            <Reroute eventId={event.id} events={d.events} volunteers={d.volunteers} tasks={d.tasks} sponsors={d.sponsors} runs={d.runs} free={free} />
           ) : (
             <AgentPage d={d} agent={section} state={state(section)} running={running} onRun={() => run([section])} onGo={go} />
           )}
@@ -415,12 +440,15 @@ function Overview({ d, state, running, onRun, onGo }: { d: Data; state: (a: Agen
   return (
     <>
       <PageHead
-        eyebrow={<><span className="size-1.5 rounded-full bg-good" />Event overview</>}
+        eyebrow={<><span className="size-1.5 rounded-full bg-good" />Event overview <Why subject={event.id} /><span className="ml-2 rounded-md border border-d-line px-1.5 py-0.5 text-[11px] text-d-ink3" title="Near-identical prompts with the same facts reuse a stored answer (local vector match, no API call)">Vector memory · {d.saved} Gemini call{d.saved === 1 ? "" : "s"} saved</span></>}
         title={event.name ?? <span className="text-d-ink3">Planning…</span>}
         sub={[event.theme, event.venue, event.expected_attendees ? `${event.expected_attendees} expected` : null].filter(Boolean).join(" · ")}
         actions={
           <>
             <EditDetails event={event} running={running} onRun={onRun} />
+            <Button variant="ghost" onClick={() => onGo("reroute")} className="border-crit/40 text-crit hover:bg-crit/10">
+              {Icon.reroute} Trigger disruption
+            </Button>
             <Button variant="ghost" onClick={() => navigator.clipboard.writeText(location.origin + regUrl).then(() => notify(true, "Registration link copied"))}>
               Copy registration link
             </Button>
@@ -619,6 +647,29 @@ function Planner({ event }: Data) {
         {free ? <Stat label="Milestones" value={plan.timeline.length} hint="From today to event day" /> : <Stat label="Sponsor tiers" value={plan.tiers?.length ?? 0} hint={plan.tiers?.length ? `${inr(Math.max(...plan.tiers.map((t) => t.amount)))} top tier` : undefined} />}
         <Stat label="Days to event" value={days == null ? "—" : days < 0 ? "Done" : days} hint={longDate(event.date)} />
       </div>
+      <Card title="Event details" sub={<>What the Planner decided from your brief <Why subject={event.id} /></>}>
+        <dl className="grid gap-x-6 gap-y-4 sm:grid-cols-2 lg:grid-cols-4">
+          {[
+            ["Event", event.name],
+            ["Theme", event.theme],
+            ["Date", longDate(event.date)],
+            ["Venue", event.venue],
+            ["Type", free ? "Free event" : "Funded event"],
+            ["Budget", free ? "₹0" : inr(event.budget)],
+            ["Expected", event.expected_attendees ? `${event.expected_attendees} attendees` : null],
+            ["Milestones", `${plan.timeline.length} steps`],
+          ].map(([k, v]) => (
+            <div key={k}>
+              <dt className="text-[11.5px] text-d-ink3">{k}</dt>
+              <dd className="mt-0.5 text-[13.5px] text-d-ink">{v || "—"}</dd>
+            </div>
+          ))}
+        </dl>
+        <div className="mt-4 rounded-lg border border-d-line bg-black/20 px-3.5 py-2.5 text-[13px] text-d-ink2">
+          <span className="text-d-ink3">Brief · </span>
+          {event.brief}
+        </div>
+      </Card>
       {!!split.length && (
         <Card title="Budget split" sub={`${inr(event.budget)} across ${split.length} cost heads`}>
           <SegmentedBar parts={split.map((b) => ({ label: b.head, value: b.amount }))} />
@@ -757,6 +808,7 @@ function Sponsors({ event, sponsors, alumni, demoInbox, crm, today }: Data) {
                           </div>
                           {s.tier && <div className="mt-0.5 text-[11px] text-d-ink3">{s.tier}{tierAmt(s) ? ` · ${inr(tierAmt(s))}` : ""}</div>}
                         </button>
+                        <div className="mt-1 empty:hidden"><Why subject={s.id} /></div>
                         {!!NEXT[c]?.length && (
                           <div className="mt-2 flex flex-wrap gap-1">
                             {NEXT[c]!.map((nx) => (
@@ -970,6 +1022,8 @@ function Pitch({ eventId, s, onClose, hideClose }: { eventId: string; s: Sponsor
 
 function Logistics({ event, volunteers, tasks, crm }: Data) {
   const [pending, go] = useAction();
+  const [profile, setProfile] = useState<string | null>(null);
+  const shown = volunteers.find((v) => v.id === profile);
   const open = tasks.filter((t) => !t.volunteer_id);
   const hours = tasks.reduce((s, t) => s + hrs(t), 0);
   const rows = [
@@ -1010,17 +1064,20 @@ function Logistics({ event, volunteers, tasks, crm }: Data) {
         </Card>
         <Card
           title="Volunteers"
-          sub={`${volunteers.length} on the team`}
+          sub={`${volunteers.length} on the team — click one for their profile`}
           action={<Button variant="ghost" pending={pending} onClick={() => go(() => act.staffEvent(event.id))}>+ From club roster</Button>}
         >
+          {shown && <div className="mb-4"><VolunteerCard v={shown} tasks={tasks} onClose={() => setProfile(null)} /></div>}
           <ul className="mb-5 divide-y divide-d-line">
             {volunteers.map((v) => (
-              <li key={v.id} className="flex items-center justify-between gap-3 py-2.5 text-[13px]">
+              <li key={v.id}>
+                <button type="button" onClick={() => setProfile(profile === v.id ? null : v.id)} aria-expanded={profile === v.id} className={`flex w-full items-center justify-between gap-3 py-2.5 text-left text-[13px] transition-colors ${profile === v.id ? "text-d-ink" : "text-d-ink2 hover:text-d-ink"}`}>
                 <span className="flex items-center gap-2.5">
                   <span className="grid size-7 place-items-center rounded-full bg-white/[0.06] text-[11px] font-medium text-d-ink2">{v.name.split(" ").map((p) => p[0]).slice(0, 2).join("")}</span>
                   {v.name}
                 </span>
                 <span className="truncate text-[12px] text-d-ink3">{v.skills || "—"}</span>
+                </button>
               </li>
             ))}
           </ul>

@@ -8,7 +8,7 @@ import { db, llm, requireAdmin, sendMail } from "@/lib/server";
 import { currentStudent, endSession, hashPassword, startSession, verifyPassword } from "@/lib/student";
 import { certificatePdf } from "@/lib/pdf";
 import { buildReport, reportStats } from "@/lib/report";
-import { assign } from "@/lib/schedule";
+import { assignExplained } from "@/lib/schedule";
 import { appUrl, posterEvent, posterPng } from "@/lib/poster";
 import { DEMO_MEMBERS, joinSkills, parseSkills } from "@/lib/roster";
 import { DEFAULT_WEIGHTS } from "@/lib/fit";
@@ -17,6 +17,7 @@ import { CONTRIBUTIONS, PAYMENT_STATUSES } from "@/lib/types";
 import { offlineComms, offlinePitch, offlinePlan, offlineReport, offlineSuggestions, offlineTasks } from "@/lib/offline";
 
 import type { AgentName } from "@/lib/agents";
+import type { Alerted, Decision, DiffLine, Disruption, Reroute } from "@/lib/types";
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const TODAY = () => new Date().toISOString().slice(0, 10);
@@ -43,6 +44,20 @@ function parseLines(text: string) {
     .filter(([name, email]) => name && email && EMAIL.test(email));
 }
 
+// ───────────────────────── decision trail ─────────────────────────
+// Every automated outcome is stored with the rules/scores behind it, and every status change is logged (append-only).
+
+type NewDecision = Pick<Decision, "kind" | "subject" | "outcome" | "decided_by" | "why"> & { subject_id?: string | null };
+
+async function record(eventId: string, rows: NewDecision[]) {
+  if (!rows.length) return [] as string[];
+  const ins = await must(db().from("decisions").insert(rows.map((r) => ({ ...r, event_id: eventId }))).select("id, decided_by"));
+  await must(
+    db().from("decision_log").insert(ins.map((d) => ({ decision_id: d.id, event_id: eventId, from_status: null, to_status: "auto", actor: d.decided_by, note: "Decided automatically" }))),
+  );
+  return ins.map((d) => d.id as string);
+}
+
 // ───────────────────────── agents ─────────────────────────
 
 /**
@@ -62,6 +77,7 @@ const tag = (off: boolean) => (off ? " · offline mode" : "");
 
 type Plan = {
   kind: "funded" | "free";
+  kind_reason?: string;
   name: string;
   theme: string;
   date: string;
@@ -80,7 +96,7 @@ async function planner(eventId: string) {
 Turn this one-line brief into an event plan. Brief: """${ev.brief}"""
 First decide "kind": "free" when the event needs no money and no sponsors (a seminar, talk, workshop or meetup with no budget given,
 or the brief says free / ₹0 / no budget); otherwise "funded" (hackathons, fests, anything with a budget).
-Return JSON: {"kind": "funded"|"free", "name": string, "theme": string, "date": "YYYY-MM-DD" (future date), "budget": integer INR (0 if free),
+Return JSON: {"kind": "funded"|"free", "kind_reason": string (one sentence: why free or funded), "name": string, "theme": string, "date": "YYYY-MM-DD" (future date), "budget": integer INR (0 if free),
 "expected_attendees": integer, "venue": string (a plausible campus hall),
 "budget_split": [{"head": string, "amount": integer}] (funded: 4-6 heads summing to budget; free: []),
 "tiers": [{"name": "Title"|"Gold"|"Silver"|"Community", "amount": integer INR, "perks": [string]}] (funded: 3-4 tiers; free: []),
@@ -105,6 +121,24 @@ The organiser has set these values by hand — use them exactly and plan around 
       })
       .eq("id", eventId),
   );
+  const brief = ev.brief.toLowerCase();
+  const hasBudget = /₹|\brs\.?|\d+\s*k\b|lakh|budget/.test(brief);
+  await record(eventId, [{
+    kind: "plan",
+    subject_id: eventId,
+    subject: p.name,
+    outcome: free ? "Planned as a free event — no budget, no sponsors" : `Planned as a funded event — ${inr(p.budget)}, ${p.tiers.length} sponsor tiers`,
+    decided_by: off ? "Planner (offline rules)" : "Planner (Gemini)",
+    why: {
+      rules: [
+        { rule: "Budget given in the brief", ok: hasBudget, detail: hasBudget ? "The brief names an amount" : "No amount in the brief" },
+        { rule: "Brief reads as a free event (free / seminar / talk / workshop / meetup / ₹0)", ok: /free|seminar|talk|workshop|meetup|₹\s*0\b/.test(brief), detail: `Brief: “${ev.brief.slice(0, 120)}”` },
+        { rule: "Organiser overrides respected", ok: true, detail: Object.keys(fixed).length ? `Kept as typed: ${Object.keys(fixed).join(", ")}` : "None set" },
+      ],
+      scores: { budget: inr(free ? 0 : p.budget), expected: p.expected_attendees },
+      notes: p.kind_reason ? [p.kind_reason] : [],
+    },
+  }]);
   return {
     summary: (free
       ? `Planned ${p.name}: free event, ${p.timeline.length} milestones — no budget or sponsors needed`
@@ -142,7 +176,7 @@ Return JSON: {"suggestions": [{"company": string, "why": string, "fit_score": in
   if (!leads.length) return { summary: `Recommended ${suggestions.length} sponsors — add a contact email to pitch one` + tag(off1), output: { suggestions } };
 
   // Small integer keys instead of UUIDs: the model echoes them back reliably.
-  const { v: r, off: off2 } = await smart<{ pitches: { n: number; tier: string; fit_score: number; subject: string; body: string }[] }>(
+  const { v: r, off: off2 } = await smart<{ pitches: { n: number; tier: string; fit_score: number; why?: string; subject: string; body: string }[] }>(
     `You are the Sponsorship agent for "${ev.name}" (${ev.theme}), on ${ev.date} at ${ev.venue}, ~${ev.expected_attendees} student attendees.
 Sponsor tiers: ${JSON.stringify(ev.plan?.tiers ?? [])}
 For each company below, pick the best-fit tier, score fit 0-100 for this audience, and write a funding-request email
@@ -154,7 +188,8 @@ Instagram and LinkedIn, a thank-you mention on stage, logo on the public registr
 4) a reply-by date 10 days before the event and an offer of a short call.
 The subject line names the tier and the event.
 Companies: ${JSON.stringify(leads.map((l, n) => ({ n, company: l.company })))}
-Return JSON: {"pitches": [{"n": integer (same n), "tier": string, "fit_score": integer, "subject": string, "body": string}]}`,
+Also give "why": one sentence on the fit score and tier, specific to this company and audience.
+Return JSON: {"pitches": [{"n": integer (same n), "tier": string, "fit_score": integer, "why": string, "subject": string, "body": string}]}`,
     () => ({
       pitches: leads.map((l, n) => {
         const t = tiers.find((x) => x.name === l.tier) ?? tiers[Math.min(n, Math.max(0, tiers.length - 2))];
@@ -171,6 +206,26 @@ Return JSON: {"pitches": [{"n": integer (same n), "tier": string, "fit_score": i
         .eq("id", leads[p.n].id),
     );
   }
+  await record(eventId, pitches.map((p) => {
+    const t = tiers.find((x) => x.name === p.tier);
+    const score = Math.round(p.fit_score);
+    return {
+      kind: "sponsor" as const,
+      subject_id: leads[p.n].id,
+      subject: leads[p.n].company,
+      outcome: `${p.tier} tier · fit ${score}/100`,
+      decided_by: off2 ? "Sponsorship agent (offline template)" : "Sponsorship agent (Gemini)",
+      why: {
+        rules: [
+          { rule: `Tier “${p.tier}” exists in the event plan`, ok: !!t, detail: t ? `Ask ${inr(t.amount)} · perks: ${t.perks.join(", ")}` : "Not one of the planned tiers — check before sending" },
+          { rule: "Fit score ≥ 60 to be worth pitching", ok: score >= 60, detail: score >= 60 ? `${score}/100 clears the bar` : `${score}/100 — weak fit` },
+          { rule: "Nothing is sent without the organiser", ok: true, detail: "Saved as a draft; sending is a manual click" },
+        ],
+        scores: { fit: score, ask: t ? inr(t.amount) : "—", audience: ev.expected_attendees ?? "—" },
+        notes: p.why ? [p.why] : off2 ? ["Offline template: tier kept from the lead, or by position among the planned tiers"] : [],
+      },
+    };
+  }));
   return { summary: `Drafted ${pitches.length} pitches — waiting for your approval to send · ${suggestions.length} new sponsors recommended` + tag(off1 || off2), output: { pitches, suggestions } };
 }
 
@@ -212,9 +267,17 @@ Return JSON: {"tasks": [{"title": string, "skill": string|null, "start": "HH:MM"
       starts_at: `${ev.date}T${t.start}:00+05:30`,
       ends_at: `${ev.date}T${t.end}:00+05:30`,
     }));
-  const who = assign(slots, vols);
+  const { who, why } = assignExplained(slots, vols);
   await must(db().from("tasks").delete().eq("event_id", eventId));
-  await must(db().from("tasks").insert(slots.map((s, i) => ({ ...s, event_id: eventId, volunteer_id: who[i] }))));
+  const ins = await must(db().from("tasks").insert(slots.map((s, i) => ({ ...s, event_id: eventId, volunteer_id: who[i] }))).select("id"));
+  await record(eventId, slots.map((s, i) => ({
+    kind: "shift" as const,
+    subject_id: ins[i]?.id,
+    subject: `${s.title} · ${span(s)}`,
+    outcome: who[i] ? `Assigned to ${vols.find((v) => v.id === who[i])?.name}` : "Left open — nobody free",
+    decided_by: "Logistics scheduler",
+    why: why[i],
+  })));
   const open = who.filter((w) => !w).length;
   return {
     summary: `${staffed ? `Staffed ${staffed} club members from the roster · ` : ""}${slots.length} tasks scheduled for ${vols.length} volunteers — 0 clashes${open ? `, ${open} need more hands` : ""}` + tag(off),
@@ -762,7 +825,20 @@ export async function suggestRoles(eventId: string) {
     const open = roles.filter((r) => !filled.has(r.key)).map((r) => ({ key: r.key, name: r.name, skills: r.skills, from: ROLE_WINDOWS[r.key]?.[0] ?? "09:00", to: ROLE_WINDOWS[r.key]?.[1] ?? "17:00" }));
     const out = suggest(open, profiles, load, ev.date, taken).filter((s) => s.profileId && !declinedPairs.has(`${s.roleKey}:${s.profileId}`));
     await must(db().from("role_requests").delete().eq("event_id", eventId).eq("status", "suggested"));
-    if (out.length) await must(db().from("role_requests").insert(out.map((s) => ({ event_id: eventId, role_key: s.roleKey, profile_id: s.profileId, status: "suggested", reason: s.reason }))));
+    if (out.length) {
+      const rows = await must(db().from("role_requests").insert(out.map((s) => ({ event_id: eventId, role_key: s.roleKey, profile_id: s.profileId, status: "suggested", reason: s.reason }))).select("id, role_key"));
+      await record(eventId, out.map((s) => {
+        const role = open.find((r) => r.key === s.roleKey)!;
+        return {
+          kind: "role" as const,
+          subject_id: rows.find((x) => x.role_key === s.roleKey)?.id,
+          subject: `${role.name} · ${role.from}–${role.to}`,
+          outcome: `Suggested ${profiles.find((p) => p.id === s.profileId)?.name}`,
+          decided_by: "Fair role matcher",
+          why: { ...s.why, notes: [s.reason] },
+        };
+      }));
+    }
     await audit("role_requests", null, "suggested", { count: out.length, open: open.length }, eventId);
     return `${out.length} of ${open.length} open roles have a suggestion — review, then send requests`;
   });
@@ -789,6 +865,9 @@ export async function overrideRole(eventId: string, requestId: string, profileId
     if (clash.length) throw new Error(`${p.name} already has a role at this event.`);
     const r = await must(db().from("role_requests").update({ profile_id: profileId, overridden: true, status: "requested", reason: `Chosen by the organiser (manual override).`, updated_at: new Date().toISOString() }).eq("id", requestId).eq("event_id", eventId).select("role_key").single());
     await audit("role_request", requestId, "overridden", { role: r.role_key, profile: profileId }, eventId);
+    // A direct organiser override is a decision status change too. During an appeal, resolveAppeal records it instead.
+    const dec = await must(db().from("decisions").select("id, status").eq("subject_id", requestId).order("created_at", { ascending: false }).limit(1));
+    if (dec[0] && dec[0].status !== "appealed" && dec[0].status !== "overridden") await transition(dec[0].id, "overridden", "Organiser", `Manual override → ${p.name}`, { outcome: `Overridden → ${p.name}` });
     return `${p.name} requested for ${r.role_key.replace(/_/g, " ")}`;
   });
 }
@@ -998,8 +1077,8 @@ export async function emailVolunteers(eventId: string) {
       const mine = tasks.filter((x) => x.volunteer_id === v.id);
       if (!mine.length) continue;
       await sendMail({
-        to: v.email,
-        subject: `Your shifts for ${ev.name}`,
+        to: alertRecipient({ email: v.email, role: "volunteer" }),
+        subject: `${FICTIONAL.test(v.email) ? `[Demo → ${v.name}] ` : ""}Your shifts for ${ev.name}`,
         text: `Hi ${v.name},\n\nHere are your shifts for ${ev.name} on ${ev.date} at ${ev.venue}:\n\n${mine
           .map((x) => `${t(x.starts_at)}–${t(x.ends_at)}  ${x.title}`)
           .join("\n")}\n\nThanks!\nTeam ${ev.name}`,
@@ -1021,8 +1100,11 @@ export async function sendReminders(eventId: string) {
     const ev = await getEvent(eventId);
     const c = ev.plan?.comms;
     if (!c) throw new Error("Run the Comms agent first to draft the reminder.");
-    const att = await must(db().from("attendees").select("email").eq("event_id", eventId));
-    for (const a of att) await sendMail({ to: a.email, subject: c.reminder_subject, text: c.reminder_body });
+    const att = await must(db().from("attendees").select("name, email").eq("event_id", eventId));
+    for (const a of att) {
+      const to = pitchRecipient(a.email);
+      await sendMail({ to, subject: `${to !== a.email ? `[Demo → ${a.name}] ` : ""}${c.reminder_subject}`, text: c.reminder_body });
+    }
     return `Sent reminder to ${att.length} attendee${att.length === 1 ? "" : "s"}`;
   });
 }
@@ -1078,8 +1160,8 @@ export async function sendCertificates(eventId: string) {
     for (const a of att) {
       const pdf = await certificatePdf({ name: a.name, event: ev.name, date: ev.date, club: `Team ${ev.name}` });
       await sendMail({
-        to: a.email,
-        subject: `Your certificate — ${ev.name}`,
+        to: pitchRecipient(a.email),
+        subject: `${pitchRecipient(a.email) !== a.email ? `[Demo → ${a.name}] ` : ""}Your certificate — ${ev.name}`,
         text: `Hi ${a.name},\n\nThanks for being at ${ev.name}. Your certificate of participation is attached.\n\nTeam ${ev.name}`,
         attachments: [{ filename: "certificate.pdf", content: pdf }],
       });
@@ -1098,8 +1180,8 @@ export async function sendReport(eventId: string) {
     if (!confirmed.length) throw new Error("No confirmed sponsors to send the report to.");
     for (const s of confirmed)
       await sendMail({
-        to: s.contact_email,
-        subject: `${ev.name} — partner report`,
+        to: pitchRecipient(s.contact_email),
+        subject: `${pitchRecipient(s.contact_email) !== s.contact_email ? `[Demo → ${s.company}] ` : ""}${ev.name} — partner report`,
         text: `Hi ${s.company} team,\n\nThank you for partnering with ${ev.name}. Our report is attached.\n\nTeam ${ev.name}`,
         attachments: [{ filename: "sponsor-report.pdf", content: pdf }],
       });
@@ -1202,4 +1284,354 @@ export async function registerMe(eventId: string): Promise<FormState> {
   const r = await enroll(eventId, me.name, me.email, me.usn ?? "");
   revalidatePath("/student");
   return r;
+}
+
+// ───────────────────────── campus chaos re-router ─────────────────────────
+// A live change hits the event; recompute only the records it touches, write them, and tell exactly the people affected.
+
+const hm = (iso: string) => new Date(iso).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Kolkata" });
+const span = (t: { starts_at: string; ends_at: string }) => `${hm(t.starts_at)}–${hm(t.ends_at)}`;
+
+const FICTIONAL = /@([\w-]+\.)*example\.com$/i;
+/**
+ * Where a disruption alert actually goes. Fictional @example.com volunteers → one of DEMO_VOLUNTEER_EMAILS (same
+ * person always lands in the same inbox), so a live demo reaches real phones. Everyone else follows the pitch rule
+ * (fictional → DEMO_INBOX, real → as-is).
+ */
+function alertRecipient(a: Pick<Alerted, "email" | "role">) {
+  const demo = (process.env.DEMO_VOLUNTEER_EMAILS ?? "").split(",").map((e) => e.trim()).filter(Boolean);
+  if (a.role === "volunteer" && demo.length && FICTIONAL.test(a.email)) {
+    const h = [...a.email.toLowerCase()].reduce((n, c) => (n * 31 + c.charCodeAt(0)) >>> 0, 7);
+    return demo[h % demo.length];
+  }
+  return pitchRecipient(a.email);
+}
+
+async function reroute(eventId: string, d: Disruption): Promise<Reroute> {
+  const ev = await getEvent(eventId);
+  const [vols, tasks, att, sps] = await Promise.all([
+    must(db().from("volunteers").select("*").eq("event_id", eventId)),
+    must(db().from("tasks").select("*").eq("event_id", eventId).order("starts_at")),
+    must(db().from("attendees").select("name, email").eq("event_id", eventId)),
+    must(db().from("sponsors").select("*").eq("event_id", eventId)),
+  ]);
+  const changes: DiffLine[] = [];
+  const alerts = new Map<string, Alerted>();
+  const tell = (name: string, email: string, role: Alerted["role"], line: DiffLine) => {
+    const a = alerts.get(email) ?? { name, email, role, lines: [] };
+    a.lines.push(line);
+    alerts.set(email, a);
+  };
+  let headline: string, scope: string, total: number;
+
+  if (d.kind === "volunteer_out") {
+    const out = vols.find((v) => v.id === d.volunteerId);
+    if (!out) throw new Error("Pick a volunteer.");
+    const hit = tasks.filter((t) => t.volunteer_id === out.id);
+    const has = (v: { skills: string | null } | undefined, skill: string | null) => !skill || !!v?.skills?.toLowerCase().includes(skill.toLowerCase().trim());
+
+    // Pass 1: only the dropped shifts go back through the scheduler, around the event team's existing shifts.
+    const team = vols.filter((v) => v.id !== out.id);
+    const p1 = assignExplained(hit, team, tasks.filter((t) => t.volunteer_id !== out.id));
+    const first = p1.who;
+    // Pass 2: shifts nobody on the team can do properly (no one free, or only someone without the skill)
+    // go to available club roster members who aren't on this event yet.
+    const gap = hit.map((t, i) => (first[i] && has(team.find((v) => v.id === first[i]), t.skill) ? -1 : i)).filter((i) => i >= 0);
+    const onEvent = new Set(vols.map((v) => v.email.toLowerCase()));
+    const bench = gap.length
+      ? (await must(db().from("volunteers").select("id, name, email, skills, profile").is("event_id", null)))
+          .filter((m) => parseSkills(m.skills).available && !onEvent.has(m.email.toLowerCase()))
+          .map((m) => ({ ...m, skills: parseSkills(m.skills).skills.join(", ") }))
+      : [];
+    const p2 = assignExplained(gap.map((i) => hit[i]), bench);
+    const second = p2.who;
+    const who = [...first];
+    const viaRoster = new Map<number, number>(); // hit index → position in gap
+    const joined = new Map<string, { id: string; name: string; email: string }>(); // roster id → new event volunteer
+    for (const [k, i] of gap.entries()) {
+      const m = bench.find((b) => b.id === second[k]);
+      if (!m || (!has(m, hit[i].skill) && first[i])) continue; // a roster member without the skill is no better than pass 1
+      if (!joined.has(m.id)) {
+        const row = await must(db().from("volunteers").insert({ event_id: eventId, name: m.name, email: m.email, skills: m.skills, profile: m.profile }).select("id, name, email").single());
+        joined.set(m.id, row);
+      }
+      who[i] = joined.get(m.id)!.id;
+      viaRoster.set(i, k);
+    }
+    const people = [...team, ...joined.values()];
+
+    const lead = { rule: `${out.name} is unavailable`, ok: true, detail: "Only their shifts were recomputed; everyone else's stay as they were" };
+    const ids = await record(eventId, hit.map((t, i) => {
+      const next = people.find((v) => v.id === who[i]);
+      const k = viaRoster.get(i);
+      const base = k !== undefined ? p2.why[k] : p1.why[i];
+      const roster = k !== undefined
+        ? [
+            { rule: "Event team couldn't cover it properly", ok: true, detail: first[i] ? `Only ${team.find((v) => v.id === first[i])?.name} was free, without “${t.skill}”` : "Everyone on the event team was busy" },
+            { rule: "Backfill from the club roster", ok: true, detail: "Available members not already on this event were considered" },
+          ]
+        : [];
+      return {
+        kind: "reroute" as const,
+        subject_id: t.id,
+        subject: `${t.title} · ${span(t)}`,
+        outcome: next ? `Re-assigned ${out.name} → ${next.name}${k !== undefined ? " (club roster)" : ""}` : "Left open — nobody free",
+        decided_by: "Chaos Re-Router",
+        why: { ...base, rules: [lead, ...roster, ...base.rules] },
+      };
+    }));
+
+    for (const [i, t] of hit.entries()) {
+      await must(db().from("tasks").update({ volunteer_id: who[i] }).eq("id", t.id));
+      const next = people.find((v) => v.id === who[i]);
+      const fromRoster = [...joined.values()].some((j) => j.id === who[i]);
+      const line = { record: `${t.title} · ${span(t)}`, before: out.name, after: next ? `${next.name}${fromRoster ? " (from club roster)" : ""}` : "Unassigned — needs hands", decision: ids[i] };
+      changes.push(line);
+      tell(out.name, out.email, "volunteer", line);
+      if (next) tell(next.name, next.email, "volunteer", line);
+    }
+    // Keep them off auto-staffing until someone marks them available again on the Volunteers page.
+    const member = await must(db().from("volunteers").select("id, skills").is("event_id", null).eq("email", out.email.toLowerCase()));
+    for (const m of member) await must(db().from("volunteers").update({ skills: joinSkills(parseSkills(m.skills).skills, false) }).eq("id", m.id));
+
+    headline = `${out.name} is unavailable — ${hit.length} shift${hit.length === 1 ? "" : "s"} re-routed${joined.size ? ` · ${joined.size} backfilled from club roster` : ""}`;
+    scope = "shifts";
+    total = tasks.length;
+  } else if (d.kind === "venue_change") {
+    const venue = d.venue?.trim().slice(0, 120);
+    const minutes = Math.round(Number(d.minutes) || 0);
+    if (Math.abs(minutes) > 720) throw new Error("Delay must be within 12 hours.");
+    if (!venue && !minutes) throw new Error("Give a new venue, a delay, or both.");
+    if (minutes && d.from && !/^\d{2}:\d{2}$/.test(d.from)) throw new Error("Time must be HH:MM.");
+    if (minutes && d.from && !ev.date) throw new Error("The event has no date yet.");
+    const from = minutes && d.from ? Date.parse(`${ev.date}T${d.from}:00+05:30`) : -Infinity;
+    const audience: DiffLine[] = [];
+    const moved = venue && venue !== ev.venue;
+
+    if (moved) {
+      await must(db().from("events").update({ venue }).eq("id", eventId));
+      const line = { record: "Venue", before: ev.venue ?? "TBA", after: venue };
+      changes.push(line);
+      audience.push(line);
+    }
+    // Every task from `from` on moves by the same amount, so clash-freedom is preserved.
+    const hit = minutes ? tasks.filter((t) => Date.parse(t.starts_at) >= from) : [];
+    const shift = (iso: string) => new Date(Date.parse(iso) + minutes * 60_000).toISOString();
+    for (const t of hit) {
+      const next = { starts_at: shift(t.starts_at), ends_at: shift(t.ends_at) };
+      await must(db().from("tasks").update(next).eq("id", t.id));
+      const v = vols.find((x) => x.id === t.volunteer_id);
+      const [decision] = await record(eventId, [{
+        kind: "reroute",
+        subject_id: t.id,
+        subject: `${t.title}${v ? ` (${v.name})` : ""}`,
+        outcome: `Moved ${span(t)} → ${span(next)}`,
+        decided_by: "Chaos Re-Router",
+        why: {
+          rules: [
+            { rule: d.from ? `Starts at or after ${d.from}` : "Whole day shifts", ok: true, detail: `This shift started at ${hm(t.starts_at)}` },
+            { rule: `Every later shift moves by ${minutes} min`, ok: true, detail: "Same offset for all of them, so no new clashes" },
+            { rule: "Volunteer kept", ok: true, detail: v ? `${v.name} stays on it` : "Was unassigned" },
+          ],
+        },
+      }]);
+      const line = { record: `${t.title}${v ? ` (${v.name})` : ""}`, before: span(t), after: span(next), decision };
+      changes.push(line);
+      if (v) tell(v.name, v.email, "volunteer", line);
+    }
+    if (hit.length) audience.push({ record: "Programme from", before: hm(hit[0].starts_at), after: hm(shift(hit[0].starts_at)) });
+    // Venue/time affect everyone on site: attendees, and volunteers who hold any shift.
+    const onShift = vols.filter((v) => tasks.some((t) => t.volunteer_id === v.id));
+    for (const line of audience) {
+      for (const a of att) tell(a.name, a.email, "attendee", line);
+      for (const v of onShift) tell(v.name, v.email, "volunteer", line);
+    }
+    const parts = [moved ? `Moved to ${venue}` : "", hit.length ? `${hit.length} shift${hit.length === 1 ? "" : "s"} ${minutes > 0 ? "pushed" : "pulled"} ${Math.abs(minutes)} min` : ""];
+    headline = parts.filter(Boolean).join(" · ") || "Nothing needed to change";
+    scope = "shifts";
+    total = tasks.length;
+  } else if (d.kind === "sponsor_out") {
+    const s = sps.find((x) => x.id === d.sponsorId);
+    if (!s || s.status === "declined") throw new Error("Pick a sponsor that hasn't already declined.");
+    const amount = (tier: string | null) => ev.plan?.tiers?.find((t: { name: string; amount: number }) => t.name === tier)?.amount ?? 0;
+    const confirmed = sps.filter((x) => x.status === "confirmed").reduce((sum, x) => sum + amount(x.tier), 0);
+    await must(db().from("sponsors").update({ status: "declined" }).eq("id", s.id));
+    changes.push({ record: s.company, before: s.status, after: "declined" });
+    if (s.status === "confirmed") changes.push({ record: "Confirmed sponsorship", before: inr(confirmed), after: inr(confirmed - amount(s.tier)) });
+    headline = `${s.company} pulled out${s.status === "confirmed" ? ` — ${inr(amount(s.tier))} gap` : ""}`;
+    scope = "sponsors";
+    total = sps.length;
+  } else {
+    throw new Error("Unknown disruption.");
+  }
+
+  // The organiser always gets the full diff.
+  const org = process.env.GMAIL_USER;
+  if (org) for (const c of changes) tell("Organiser", org, "organiser", c);
+
+  const list = [...alerts.values()];
+  let emailed = 0;
+  // shortcut: 10 mails at a time is fine for a club event; move to a queue past a few hundred recipients.
+  for (let i = 0; i < list.length; i += 10) {
+    const res = await Promise.allSettled(
+      list.slice(i, i + 10).map((a) => {
+        const to = alertRecipient(a);
+        const demo = to !== a.email;
+        const lines = a.lines.map((l) => `• ${l.record}\n    was: ${l.before}\n    now: ${l.after}`);
+        return sendMail({
+          to,
+          subject: `${demo ? `[Demo → ${a.name}] ` : ""}Change to ${ev.name}: ${headline}`,
+          text: `${demo ? `(Demo copy — this alert is addressed to ${a.name} <${a.email}>.)\n\n` : ""}Hi ${a.name},\n\nSomething just changed for ${ev.name}${ev.date ? ` on ${ev.date}` : ""}. Here's what it means for you:\n\n${lines.join("\n\n")}\n\nEverything else stays as it was.\nTeam ${ev.name}`,
+        });
+      }),
+    );
+    emailed += res.filter((r) => r.status === "fulfilled").length;
+  }
+  return { headline, changes, alerts: list, scope, total, emailed, failed: list.length - emailed };
+}
+
+async function disrupt(eventId: string, get: () => Promise<Disruption>) {
+  try {
+    await requireAdmin();
+    const r = await reroute(eventId, await get());
+    await log(eventId, "rerouter", r.headline, r);
+    return { ok: true, message: `${r.headline} · ${r.alerts.length} people alerted` };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : String(e) };
+  } finally {
+    revalidatePath(`/dashboard/${eventId}`);
+  }
+}
+
+export async function triggerDisruption(eventId: string, d: Disruption) {
+  return disrupt(eventId, async () => d);
+}
+
+/** Free text → Gemini picks the trigger and its inputs; the recompute itself stays deterministic. */
+export async function describeDisruption(eventId: string, text: string) {
+  return disrupt(eventId, async (): Promise<Disruption> => {
+    const said = text.trim().slice(0, 500);
+    if (!said) throw new Error("Describe what happened.");
+    if (process.env.RELAY_OFFLINE === "1") throw new Error("Offline mode is on — use the trigger buttons instead.");
+    const ev = await getEvent(eventId);
+    const [vols, sps] = await Promise.all([
+      must(db().from("volunteers").select("id, name").eq("event_id", eventId)),
+      must(db().from("sponsors").select("id, company").eq("event_id", eventId).neq("status", "declined")),
+    ]);
+    const r = await llm<{ kind: string; volunteer?: string; venue?: string; from?: string; minutes?: number; sponsor?: string }>(
+      `You route last-minute changes for "${ev.name}" on ${ev.date} at ${ev.venue}.
+Volunteers: ${JSON.stringify(vols.map((v) => v.name))}
+Sponsors: ${JSON.stringify(sps.map((s) => s.company))}
+The organiser says: """${said}"""
+Classify it as exactly one of:
+- "volunteer_out": a volunteer can't make it. Give "volunteer" (a name from the list).
+- "venue_change": the venue is unavailable and/or the programme shifts. Give "venue" (new venue; omit if unchanged),
+  "from" (HH:MM 24h, when the shift starts; omit for the whole day) and "minutes" (delay; negative = earlier; 0 if none).
+- "sponsor_out": a sponsor pulled out. Give "sponsor" (a company from the list).
+Return JSON: {"kind": string, "volunteer"?: string, "venue"?: string, "from"?: string, "minutes"?: number, "sponsor"?: string}`,
+    );
+    const match = (names: string[], q?: string) => {
+      const s = q?.toLowerCase().trim();
+      return s ? Math.max(names.findIndex((n) => n.toLowerCase() === s), names.findIndex((n) => n.toLowerCase().includes(s))) : -1;
+    };
+    if (r.kind === "volunteer_out") {
+      const i = match(vols.map((v) => v.name), r.volunteer);
+      if (i < 0) throw new Error(`Couldn't match a volunteer in "${said}".`);
+      return { kind: "volunteer_out", volunteerId: vols[i].id };
+    }
+    if (r.kind === "sponsor_out") {
+      const i = match(sps.map((s) => s.company), r.sponsor);
+      if (i < 0) throw new Error(`Couldn't match a sponsor in "${said}".`);
+      return { kind: "sponsor_out", sponsorId: sps[i].id };
+    }
+    if (r.kind === "venue_change") return { kind: "venue_change", venue: r.venue, from: r.from, minutes: r.minutes };
+    throw new Error("Couldn't tell what changed — use one of the triggers above.");
+  });
+}
+
+// ───────────────────────── appeals (decision explainability & appeal trail) ─────────────────────────
+
+const NEXT: Record<string, string[]> = {
+  auto: ["appealed", "overridden"],
+  appealed: ["upheld", "overridden", "rejected"],
+  upheld: ["appealed"],
+  rejected: ["appealed"],
+  overridden: ["appealed"],
+};
+
+/** The only way a decision's status changes: checks the transition and appends it to the audit log. */
+async function transition(id: string, to: Decision["status"], actor: string, note: string, patch: Partial<Pick<Decision, "appeal" | "outcome">> = {}) {
+  const d = await must(db().from("decisions").select("*").eq("id", id).maybeSingle());
+  if (!d) throw new Error("That decision no longer exists.");
+  if (!NEXT[d.status]?.includes(to)) throw new Error(`Can't go from “${d.status}” to “${to}”.`);
+  // Conditional update: if two people act at once, only the first wins.
+  const done = await must(db().from("decisions").update({ status: to, ...patch }).eq("id", id).eq("status", d.status).select("id"));
+  if (!done.length) throw new Error("Someone else just changed this decision — refresh.");
+  await must(db().from("decision_log").insert({ decision_id: id, event_id: d.event_id, from_status: d.status, to_status: to, actor, note }));
+  revalidatePath(`/dashboard/${d.event_id}`);
+  return d as Decision;
+}
+
+function cleanAppeal(type: string, message: string, proposal?: string) {
+  const msg = message.trim().slice(0, 500);
+  if (msg.length < 3) throw new Error("Say briefly why.");
+  return { type: type === "override" ? ("override" as const) : ("dispute" as const), message: msg, proposal: proposal?.trim().slice(0, 120) || undefined };
+}
+
+/** Organiser flags a decision from the desk. */
+export async function appealDecision(id: string, type: string, message: string, proposal?: string): Promise<Result> {
+  try {
+    await requireAdmin();
+    const a = cleanAppeal(type, message, proposal);
+    await transition(id, "appealed", "Organiser", `${a.type === "override" ? "Override requested" : "Disputed"}: ${a.message}`, { appeal: { ...a, by: "Organiser" } });
+    return { ok: true, message: "Flagged for review" };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/** Organiser resolves an appeal. Overriding a shift re-assigns it (clash-checked) and tells both people. */
+export async function resolveAppeal(id: string, verdict: "upheld" | "overridden" | "rejected", note: string, assignTo?: string): Promise<Result> {
+  try {
+    await requireAdmin();
+    if (!["upheld", "overridden", "rejected"].includes(verdict)) throw new Error("Unknown verdict.");
+    const why = note.trim().slice(0, 500);
+    if (!why) throw new Error("Add a short note — it goes in the audit log.");
+    const d = await must(db().from("decisions").select("*").eq("id", id).maybeSingle());
+    if (!d) throw new Error("That decision no longer exists.");
+
+    let outcome: string | undefined;
+    if (verdict === "overridden" && assignTo && d.subject_id && d.kind === "role") {
+      const r = await overrideRole(d.event_id, d.subject_id, assignTo);
+      if (!r.ok) throw new Error(r.message);
+      const p = await must(db().from("volunteer_profiles").select("name").eq("id", assignTo).single());
+      outcome = `Overridden → ${p.name}`;
+    }
+    if (verdict === "overridden" && assignTo && d.subject_id && (d.kind === "shift" || d.kind === "reroute")) {
+      const task = await must(db().from("tasks").select("*").eq("id", d.subject_id).maybeSingle());
+      if (!task) throw new Error("That shift no longer exists.");
+      const [to, mine, ev] = await Promise.all([
+        must(db().from("volunteers").select("*").eq("id", assignTo).eq("event_id", task.event_id).maybeSingle()),
+        must(db().from("tasks").select("title, starts_at, ends_at").eq("volunteer_id", assignTo).neq("id", task.id)),
+        getEvent(task.event_id),
+      ]);
+      if (!to) throw new Error("Pick someone on this event's team.");
+      const clash = mine.find((m) => Date.parse(m.starts_at) < Date.parse(task.ends_at) && Date.parse(task.starts_at) < Date.parse(m.ends_at));
+      if (clash) throw new Error(`${to.name} is already on “${clash.title}” at that time.`);
+      const prev = task.volunteer_id ? await must(db().from("volunteers").select("name, email").eq("id", task.volunteer_id).maybeSingle()) : null;
+      await must(db().from("tasks").update({ volunteer_id: to.id }).eq("id", task.id));
+      outcome = `Overridden → ${to.name}`;
+      const line = `• ${task.title} · ${span(task)}\n    was: ${prev?.name ?? "Unassigned"}\n    now: ${to.name}`;
+      const people = [...(prev ? [{ name: prev.name, email: prev.email }] : []), { name: to.name, email: to.email }];
+      await Promise.allSettled(people.map((p) => sendMail({
+        to: alertRecipient({ email: p.email, role: "volunteer" }),
+        subject: `Appeal decided — ${task.title} (${ev.name})`,
+        text: `Hi ${p.name},\n\nThe organiser reviewed an appeal and changed this shift:\n\n${line}\n\nOrganiser's note: ${why}\n\nTeam ${ev.name}`,
+      })));
+    }
+    await transition(id, verdict, "Organiser", `${verdict[0].toUpperCase()}${verdict.slice(1)}: ${why}`, outcome ? { outcome } : {});
+    return { ok: true, message: verdict === "upheld" ? "Decision upheld" : verdict === "rejected" ? "Appeal rejected" : outcome ?? "Decision overridden" };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : String(e) };
+  }
 }
