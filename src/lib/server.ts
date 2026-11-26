@@ -25,8 +25,8 @@ const FALLBACK_MODELS = ["gemini-3.6-flash", "gemini-3.5-flash"];
 export async function llm<T>(prompt: string): Promise<T> {
   const primary = process.env.GEMINI_MODEL || "gemini-3.8-flash";
   const models = [primary, ...FALLBACK_MODELS.filter((m) => m !== primary)];
-  // GEMINI_API_KEY_FALLBACK (optional) is a second quota. Order: best model on every key, then the next model.
-  const keys = [env("GEMINI_API_KEY"), process.env.GEMINI_API_KEY_FALLBACK].filter((k): k is string => !!k);
+  // GEMINI_API_KEY_FALLBACK (optional, comma-separated) adds more quota. Order: best model on every key, then the next model.
+  const keys = [env("GEMINI_API_KEY"), ...(process.env.GEMINI_API_KEY_FALLBACK ?? "").split(",")].map((k) => k.trim()).filter(Boolean);
   const combos = models.flatMap((model) => keys.map((apiKey) => ({ model, apiKey })));
   const attempt = () =>
     withFallback(combos, ({ model, apiKey }) =>
@@ -48,7 +48,7 @@ export async function llm<T>(prompt: string): Promise<T> {
       res = await attempt();
     } catch (e2) {
       const err = geminiError(e2);
-      if (err.quota) throw new Error(`Gemini is out of quota on ${keys.length === 1 ? "the API key" : "both API keys"} right now. Wait a minute and run the agent again, or add another key as GEMINI_API_KEY_FALLBACK in .env.local.`);
+      if (err.quota) throw new Error(`Gemini is out of quota on ${keys.length === 1 ? "the API key" : `all ${keys.length} API keys`} right now. Wait a minute and run the agent again, or add another key to GEMINI_API_KEY_FALLBACK in .env.local (comma-separated).`);
       throw err;
     }
   }
