@@ -164,16 +164,33 @@ Return JSON: {"pitches": [{"n": integer (same n), "tier": string, "fit_score": i
   return { summary: `Drafted ${pitches.length} pitches — waiting for your approval to send · ${suggestions.length} new sponsors recommended` + tag(off1 || off2), output: { pitches, suggestions } };
 }
 
+/** Copy available club members (roster rows, no event) onto this event. Returns how many joined. */
+async function staffFromRoster(eventId: string) {
+  const [roster, have] = await Promise.all([
+    must(db().from("volunteers").select("name, email, skills").is("event_id", null)),
+    must(db().from("volunteers").select("email").eq("event_id", eventId)),
+  ]);
+  const taken = new Set(have.map((v) => v.email));
+  const rows = roster
+    .filter((m) => parseSkills(m.skills).available && !taken.has(m.email))
+    .map((m) => ({ event_id: eventId, name: m.name, email: m.email, skills: parseSkills(m.skills).skills.join(", ") }));
+  if (rows.length) await must(db().from("volunteers").insert(rows));
+  return rows.length;
+}
+
 async function logistics(eventId: string) {
   const ev = await getEvent(eventId);
-  const vols = await must(db().from("volunteers").select("id, name, skills").eq("event_id", eventId));
-  if (!vols.length) return { summary: "Skipped — no volunteers yet. Add them on the Schedule tab.", output: null };
+  let vols = await must(db().from("volunteers").select("id, name, skills").eq("event_id", eventId));
+  // No team yet: staff the day from club members marked available on the Volunteers page.
+  const staffed = vols.length ? 0 : await staffFromRoster(eventId);
+  if (staffed) vols = await must(db().from("volunteers").select("id, name, skills").eq("event_id", eventId));
+  if (!vols.length) return { summary: "Skipped — no volunteers. Mark club members available on the Volunteers page, or add some on the Logistics tab.", output: null };
 
   const { v: r, off } = await smart<{ tasks: { title: string; skill: string | null; start: string; end: string }[] }>(
     `You are the Logistics agent for "${ev.name}" on ${ev.date} at ${ev.venue}, ~${ev.expected_attendees} attendees.
 Volunteers and skills: ${JSON.stringify(vols.map((v) => ({ name: v.name, skills: v.skills })))}
 Write the day's run-of-show as 8-14 volunteer tasks between 07:30 and 20:00. Some tasks should run in parallel.
-Use "skill" only when a task really needs one of the listed skills (one word, e.g. "av", "design"), else null.
+Give every task a "skill" from this list when it fits, else null: registration, av, social, design, logistics, tech, hospitality.
 Return JSON: {"tasks": [{"title": string, "skill": string|null, "start": "HH:MM", "end": "HH:MM"}]}`,
     () => ({ tasks: offlineTasks(vols.map((v) => v.skills)) }),
   );
@@ -190,7 +207,7 @@ Return JSON: {"tasks": [{"title": string, "skill": string|null, "start": "HH:MM"
   await must(db().from("tasks").insert(slots.map((s, i) => ({ ...s, event_id: eventId, volunteer_id: who[i] }))));
   const open = who.filter((w) => !w).length;
   return {
-    summary: `${slots.length} tasks scheduled for ${vols.length} volunteers — 0 clashes${open ? `, ${open} need more hands` : ""}` + tag(off),
+    summary: `${staffed ? `Staffed ${staffed} club members from the roster · ` : ""}${slots.length} tasks scheduled for ${vols.length} volunteers — 0 clashes${open ? `, ${open} need more hands` : ""}` + tag(off),
     output: slots,
   };
 }
@@ -406,6 +423,14 @@ export async function addDemoMembers() {
     const rows = DEMO_MEMBERS.filter(([, email]) => !have.has(email)).map(([name, email, skills]) => ({ event_id: null, name, email, skills: joinSkills(skills, true) }));
     if (rows.length) await must(db().from("volunteers").insert(rows));
     return rows.length ? `Added ${rows.length} demo members` : "Demo members are already on the roster";
+  });
+}
+
+export async function staffEvent(eventId: string) {
+  return attempt(eventId, "logistics", async () => {
+    const n = await staffFromRoster(eventId);
+    if (!n) throw new Error("No more available club members — mark people available on the Volunteers page.");
+    return `Added ${n} available club member${n > 1 ? "s" : ""} from the roster`;
   });
 }
 

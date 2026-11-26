@@ -135,16 +135,16 @@ export function offlineTasks(volunteerSkills: (string | null)[]) {
   const skills = volunteerSkills.join(" ").toLowerCase();
   const has = (s: string) => (skills.includes(s) ? s : null);
   return [
-    { title: "Venue setup & signage", skill: null, start: "07:30", end: "09:00" },
+    { title: "Venue setup & signage", skill: has("logistics"), start: "07:30", end: "09:00" },
     { title: "Registration desk", skill: has("registration"), start: "08:00", end: "10:00" },
     { title: "AV & projector check", skill: has("av"), start: "08:00", end: "09:30" },
     { title: "Opening session stage", skill: has("av"), start: "09:30", end: "10:30" },
     { title: "Social media coverage", skill: has("social"), start: "09:30", end: "12:30" },
-    { title: "Speaker & mentor desk", skill: null, start: "10:00", end: "13:00" },
+    { title: "Speaker & mentor desk", skill: has("hospitality"), start: "10:00", end: "13:00" },
     { title: "Lunch distribution", skill: null, start: "12:30", end: "14:00" },
     { title: "Wi-Fi & power helpdesk", skill: has("tech"), start: "13:00", end: "16:00" },
     { title: "Photography", skill: has("design"), start: "15:00", end: "17:00" },
-    { title: "Closing & cleanup", skill: null, start: "17:00", end: "18:30" },
+    { title: "Closing & cleanup", skill: has("logistics"), start: "17:00", end: "18:30" },
   ];
 }
 

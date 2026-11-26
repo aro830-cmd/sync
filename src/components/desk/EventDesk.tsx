@@ -7,6 +7,7 @@ import { useEffect, useRef, useState, useTransition, type ReactNode } from "reac
 import * as act from "@/app/actions";
 import { AGENTS, agentsFor, type AgentName } from "@/lib/agents";
 import { DEMO_LEADS, DEMO_VOLUNTEERS } from "@/lib/demo";
+import { parseSkills, roleOf } from "@/lib/roster";
 import { isFree, type Attendee, type EventRow, type Run, type Sponsor, type Task, type Volunteer } from "@/lib/types";
 import { BarList, LineChart, Meter, MilestoneTrack, SegmentedBar, ShiftTimeline, inr } from "./charts";
 import { Icon } from "./icons";
@@ -190,7 +191,7 @@ function nextStep({ event, sponsors, volunteers, tasks, attendees }: Data): Step
   if (!sponsors.length) return { stage: "Sponsors", text: "Add the companies you want to approach — the Sponsorship agent writes each pitch.", go: "sponsorship", cta: "Add sponsor leads" };
   if (has("lead")) return { stage: "Sponsors", text: `${has("lead")} new lead${has("lead") > 1 ? "s" : ""} waiting — draft tailored pitches for them.`, agent: "sponsorship", cta: "Run Sponsorship" };
   if (has("drafted")) return { stage: "Sponsors", text: `${has("drafted")} pitch${has("drafted") > 1 ? "es are" : " is"} drafted. Read, edit if needed, then approve to send.`, go: "sponsorship", cta: "Review pitches" };
-  if (!volunteers.length) return { stage: "Logistics", text: "Add your volunteers and their skills so the day can be scheduled.", go: "logistics", cta: "Add volunteers" };
+  if (!volunteers.length) return { stage: "Logistics", text: "Staff the day — Logistics picks available club members from your roster and gives each a role.", agent: "logistics", cta: "Run Logistics" };
   if (!tasks.length) return { stage: "Logistics", text: "Build the run-of-show and assign volunteers with zero clashes.", agent: "logistics", cta: "Run Logistics" };
   if (!event.plan?.comms) return { stage: "Comms", text: "Draft the announcement and attendee reminder.", agent: "comms", cta: "Run Comms" };
   if (!attendees.length) return { stage: "Registration", text: "Share the announcement — registrations appear here as they come in.", go: "comms", cta: "Open registrations" };
@@ -202,7 +203,7 @@ function nextStep({ event, sponsors, volunteers, tasks, attendees }: Data): Step
 
 function freeStep({ event, volunteers, tasks, attendees }: Data): Step {
   const checked = attendees.filter((a) => a.checked_in);
-  if (!volunteers.length) return { stage: "Logistics", text: "Free event — no sponsors needed. Add your volunteers so the day can be scheduled.", go: "logistics", cta: "Add volunteers" };
+  if (!volunteers.length) return { stage: "Logistics", text: "Free event — no sponsors needed. Logistics staffs the day from your club roster.", agent: "logistics", cta: "Run Logistics" };
   if (!tasks.length) return { stage: "Logistics", text: "Build the run-of-show and assign volunteers with zero clashes.", agent: "logistics", cta: "Run Logistics" };
   if (!event.plan?.comms) return { stage: "Comms", text: "Draft the announcement and attendee reminder.", agent: "comms", cta: "Run Comms" };
   if (!attendees.length) return { stage: "Registration", text: "Share the announcement — registrations appear here as they come in.", go: "comms", cta: "Open registrations" };
@@ -903,11 +904,17 @@ function Logistics({ event, volunteers, tasks }: Data) {
         {tasks.length ? <div className="overflow-x-auto"><div className="min-w-[640px]"><ShiftTimeline rows={rows} /></div></div> : <Empty>Add volunteers below (or use the demo list), then run the Logistics agent.</Empty>}
       </Card>
 
+      <Roles volunteers={volunteers} tasks={tasks} />
+
       <div className="grid gap-3 lg:grid-cols-[1fr_1fr]">
         <Card title="Hours per volunteer" sub="Load is balanced across the team">
           {load.length ? <BarList rows={load} format={(h) => `${h.toFixed(1)}h`} color="bg-s4" /> : <Empty>No volunteers yet.</Empty>}
         </Card>
-        <Card title="Volunteers" sub={`${volunteers.length} on the team`}>
+        <Card
+          title="Volunteers"
+          sub={`${volunteers.length} on the team`}
+          action={<Button variant="ghost" pending={pending} onClick={() => go(() => act.staffEvent(event.id))}>+ From club roster</Button>}
+        >
           <ul className="mb-5 divide-y divide-d-line">
             {volunteers.map((v) => (
               <li key={v.id} className="flex items-center justify-between gap-3 py-2.5 text-[13px]">
@@ -923,6 +930,50 @@ function Logistics({ event, volunteers, tasks }: Data) {
         </Card>
       </div>
     </div>
+  );
+}
+
+/** Who does what on the day: each volunteer's role (from the skills their shifts needed) and their shifts. */
+function Roles({ volunteers, tasks }: { volunteers: Volunteer[]; tasks: Task[] }) {
+  const t = (iso: string) => new Date(iso).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Kolkata" });
+  const rows = volunteers
+    .map((v) => {
+      const mine = tasks.filter((x) => x.volunteer_id === v.id).sort((a, b) => Date.parse(a.starts_at) - Date.parse(b.starts_at));
+      const used = mine.map((x) => x.skill).filter(Boolean) as string[];
+      const top = used.sort((a, b) => used.filter((x) => x === b).length - used.filter((x) => x === a).length)[0] ?? parseSkills(v.skills).skills[0];
+      return { v, mine, role: top ? roleOf(top) : "General help", hours: mine.reduce((s, x) => s + hrs(x), 0) };
+    })
+    .sort((a, b) => b.mine.length - a.mine.length);
+  if (!tasks.length) return null;
+  return (
+    <Card title="Who does what" sub="Every volunteer's role and shifts for the day">
+      <ul className="grid gap-2 md:grid-cols-2">
+        {rows.map(({ v, mine, role, hours }) => (
+          <li key={v.id} className="rounded-xl border border-d-line bg-black/20 p-3.5">
+            <div className="flex items-center gap-3">
+              <span className="grid size-9 shrink-0 place-items-center rounded-full bg-s1/15 text-[12px] font-semibold text-s1">{v.name.split(" ").map((p) => p[0]).slice(0, 2).join("")}</span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[14px] font-medium">{v.name}</span>
+                <span className="block text-[12px] text-s1">{role}</span>
+              </span>
+              <span className="text-right text-[12px] tabular-nums text-d-ink3">{mine.length} shift{mine.length === 1 ? "" : "s"}<br />{hours.toFixed(1)}h</span>
+            </div>
+            {mine.length ? (
+              <ul className="mt-2.5 space-y-1 border-t border-d-line pt-2.5">
+                {mine.map((x) => (
+                  <li key={x.id} className="flex gap-3 text-[12.5px]">
+                    <span className="w-24 shrink-0 tabular-nums text-d-ink3">{t(x.starts_at)}–{t(x.ends_at)}</span>
+                    <span className="truncate text-d-ink2">{x.title}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mt-2 text-[12px] text-d-ink3">On standby — no shift needed them.</p>
+            )}
+          </li>
+        ))}
+      </ul>
+    </Card>
   );
 }
 
