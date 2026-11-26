@@ -31,7 +31,8 @@ Next.js 16 + TypeScript · Tailwind v4 + motion · Gemini · Supabase Postgres �
    | `SESSION_SECRET` | Any long random string; signs student login cookies |
 
 3. New Supabase project only: run `supabase/schema.sql` in the SQL editor, then optionally `supabase/seed.sql` for the demo event (open `/dashboard/de000000-0000-4000-a000-000000000001`). For demo history (6 past + 2 upcoming events, fictional sponsors, volunteer shifts): `node --env-file=.env.local supabase/seed-history.mjs` (re-runnable).
-4. `npm run dev` → http://localhost:3000
+4. **Database update (once, by the Supabase project owner):** open Supabase → SQL Editor → New query, paste `supabase/migrations/002_sponsor_crm_volunteers.sql`, press Run. It only adds tables/columns (sponsor CRM, volunteer profiles, mission roles, rewards, incidents, audit log), is safe to re-run, and copies existing sponsors and the club roster into the new tables. Until it's run, the features that need it show a "Database update needed" notice.
+5. `npm run dev` → http://localhost:3000
 
 ## Routes
 

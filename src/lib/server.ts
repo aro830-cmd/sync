@@ -91,3 +91,12 @@ export async function requireAdmin() {
   }
   if (readToken((await cookies()).get(ADMIN_COOKIE)?.value) !== "admin") throw new Error("Your organiser session ended. Log in again.");
 }
+
+/**
+ * True once supabase/migrations/002_sponsor_crm_volunteers.sql has been run on this database.
+ * Features built on it check this and show a "database update needed" notice instead of erroring.
+ */
+export async function crmReady() {
+  const { error } = await db().from("roles").select("key").limit(1);
+  return !error;
+}

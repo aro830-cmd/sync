@@ -86,3 +86,5 @@ create table if not exists students (
   created_at timestamptz default now()
 );
 alter table students enable row level security;
+
+-- Later additions live in supabase/migrations/ — run them in order after this file (002 adds the sponsor CRM, volunteer profiles, roles, rewards, incidents, audit log).

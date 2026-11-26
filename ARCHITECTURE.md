@@ -75,6 +75,9 @@ Agents with no input (no leads / no volunteers) skip with a message instead of f
 
 ## Data model
 
+Migration `supabase/migrations/002_sponsor_crm_volunteers.sql` (run once by the project owner; `crmReady()` in `server.ts` detects it): `companies` + `company_sources` (claim, URL, date, confidence), `settings` (fit-score weights), sponsor columns `company_id, contribution_type, value, terms, proposal_sent_at`, `sponsor_payments` (planned → invoice_sent → committed → partially_received/received | overdue | disputed), `sponsor_deliverables`, `volunteer_profiles` (opt-in skills, roles, availability slots, goals, rewards, languages, accessibility), `roles` (9 mission roles, seeded), `role_requests` (suggested → requested → accepted/declined → completed, with reason + override flag), `volunteer_feedback`, `rewards`, `incidents`, `audit_log`. All RLS-on, server-only. Types in `src/lib/types.ts`.
+
+
 `events` (`plan` jsonb also holds `kind` and `suggestions`), `sponsors` (status: lead → drafted → contacted → replied → confirmed | declined), `volunteers`, `tasks`, `attendees` (unique per event+email), `agent_runs`, `students` (portal accounts; linked to `attendees` by email). See `supabase/schema.sql`.
 
 ## UI direction
